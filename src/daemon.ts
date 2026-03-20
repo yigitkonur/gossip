@@ -1,0 +1,391 @@
+#!/usr/bin/env bun
+
+import { appendFileSync, unlinkSync, writeFileSync } from "node:fs";
+import type { ServerWebSocket } from "bun";
+import { CodexAdapter } from "./codex-adapter";
+import { TuiConnectionState } from "./tui-connection-state";
+import type { ControlClientMessage, ControlServerMessage, DaemonStatus } from "./control-protocol";
+import type { BridgeMessage } from "./types";
+
+interface ControlSocketData {
+  clientId: number;
+  attached: boolean;
+}
+
+const CODEX_APP_PORT = parseInt(process.env.CODEX_WS_PORT ?? "4500", 10);
+const CODEX_PROXY_PORT = parseInt(process.env.CODEX_PROXY_PORT ?? "4501", 10);
+const CONTROL_PORT = parseInt(process.env.AGENTBRIDGE_CONTROL_PORT ?? "4502", 10);
+const PID_FILE = process.env.AGENTBRIDGE_PID_FILE ?? `/tmp/agentbridge-daemon-${CONTROL_PORT}.pid`;
+const LOG_FILE = "/tmp/agentbridge.log";
+const TUI_DISCONNECT_GRACE_MS = parseInt(process.env.TUI_DISCONNECT_GRACE_MS ?? "2500", 10);
+const MAX_BUFFERED_MESSAGES = parseInt(process.env.AGENTBRIDGE_MAX_BUFFERED_MESSAGES ?? "100", 10);
+
+const codex = new CodexAdapter(CODEX_APP_PORT, CODEX_PROXY_PORT);
+const attachCmd = `codex --enable tui_app_server --remote ${codex.proxyUrl}`;
+
+let controlServer: ReturnType<typeof Bun.serve> | null = null;
+let attachedClaude: ServerWebSocket<ControlSocketData> | null = null;
+let nextControlClientId = 0;
+let nextSystemMessageId = 0;
+let codexBootstrapped = false;
+let shuttingDown = false;
+
+const bufferedMessages: BridgeMessage[] = [];
+
+const tuiConnectionState = new TuiConnectionState({
+  disconnectGraceMs: TUI_DISCONNECT_GRACE_MS,
+  log,
+  onDisconnectPersisted: (connId) => {
+    emitToClaude(
+      systemMessage(
+        "system_tui_disconnected",
+        `⚠️ Codex 终端界面已断开 (conn #${connId})。Codex 后台仍在运行，重新连接 TUI 即可恢复。`,
+      ),
+    );
+  },
+  onReconnectAfterNotice: (connId) => {
+    emitToClaude(
+      systemMessage(
+        "system_tui_reconnected",
+        `✅ Codex TUI 已重新连接 (conn #${connId})。桥接已恢复，可以继续通信。`,
+      ),
+    );
+    codex.injectMessage("✅ Claude Code 仍在线，桥接已恢复。可以继续双向通信。");
+  },
+});
+
+codex.on("agentMessage", (msg: BridgeMessage) => {
+  if (msg.source !== "codex") return;
+  log(`Forwarding Codex → Claude (${msg.content.length} chars)`);
+  emitToClaude(msg);
+});
+
+codex.on("turnCompleted", () => {
+  log("Codex turn completed");
+});
+
+codex.on("ready", (threadId: string) => {
+  tuiConnectionState.markBridgeReady();
+  log(`Codex ready — thread ${threadId}`);
+  log("Bridge fully operational");
+
+  emitToClaude(
+    systemMessage(
+      "system_ready",
+      `✅ Codex TUI 已连接，会话线程已创建 (${threadId})。桥接现已完全建立，可以使用 reply 工具向 Codex 发送消息。`,
+    ),
+  );
+
+  if (attachedClaude) {
+    notifyCodexClaudeOnline();
+  }
+});
+
+codex.on("tuiConnected", (connId: number) => {
+  tuiConnectionState.handleTuiConnected(connId);
+  log(`Codex TUI connected (conn #${connId})`);
+  broadcastStatus();
+});
+
+codex.on("tuiDisconnected", (connId: number) => {
+  tuiConnectionState.handleTuiDisconnected(connId);
+  log(`Codex TUI disconnected (conn #${connId})`);
+  broadcastStatus();
+});
+
+codex.on("error", (err: Error) => {
+  log(`Codex error: ${err.message}`);
+});
+
+codex.on("exit", (code: number | null) => {
+  log(`Codex process exited (code ${code})`);
+  tuiConnectionState.handleCodexExit();
+  emitToClaude(
+    systemMessage(
+      "system_codex_exit",
+      `⚠️ Codex app-server 已退出 (code ${code ?? "unknown"})。AgentBridge daemon 仍在运行，但需要重启 Codex 侧连接。`,
+    ),
+  );
+  broadcastStatus();
+});
+
+function startControlServer() {
+  controlServer = Bun.serve({
+    port: CONTROL_PORT,
+    hostname: "127.0.0.1",
+    fetch(req, server) {
+      const url = new URL(req.url);
+
+      if (url.pathname === "/healthz" || url.pathname === "/readyz") {
+        return Response.json(currentStatus());
+      }
+
+      if (url.pathname === "/ws" && server.upgrade(req, { data: { clientId: 0, attached: false } })) {
+        return undefined;
+      }
+
+      return new Response("AgentBridge daemon");
+    },
+    websocket: {
+      open: (ws: ServerWebSocket<ControlSocketData>) => {
+        ws.data.clientId = ++nextControlClientId;
+        log(`Frontend socket opened (#${ws.data.clientId})`);
+      },
+      close: (ws: ServerWebSocket<ControlSocketData>) => {
+        log(`Frontend socket closed (#${ws.data.clientId})`);
+        if (attachedClaude === ws) {
+          detachClaude(ws, "frontend socket closed");
+        }
+      },
+      message: (ws: ServerWebSocket<ControlSocketData>, raw) => {
+        handleControlMessage(ws, raw);
+      },
+    },
+  });
+}
+
+function handleControlMessage(ws: ServerWebSocket<ControlSocketData>, raw: string | Buffer) {
+  let message: ControlClientMessage;
+  try {
+    const text = typeof raw === "string" ? raw : raw.toString();
+    message = JSON.parse(text);
+  } catch {
+    return;
+  }
+
+  switch (message.type) {
+    case "claude_connect":
+      attachClaude(ws);
+      return;
+    case "claude_disconnect":
+      detachClaude(ws, "frontend requested disconnect");
+      return;
+    case "status":
+      sendStatus(ws);
+      return;
+    case "claude_to_codex": {
+      if (message.message.source !== "claude") {
+        sendProtocolMessage(ws, {
+          type: "claude_to_codex_result",
+          requestId: message.requestId,
+          success: false,
+          error: "Invalid message source",
+        });
+        return;
+      }
+
+      if (!tuiConnectionState.canReply()) {
+        sendProtocolMessage(ws, {
+          type: "claude_to_codex_result",
+          requestId: message.requestId,
+          success: false,
+          error: "Codex is not ready. Wait for TUI to connect and create a thread.",
+        });
+        return;
+      }
+
+      log(`Forwarding Claude → Codex (${message.message.content.length} chars)`);
+      const injected = codex.injectMessage(message.message.content);
+      sendProtocolMessage(ws, {
+        type: "claude_to_codex_result",
+        requestId: message.requestId,
+        success: injected,
+        error: injected ? undefined : "Injection failed: no active thread or WebSocket not connected.",
+      });
+      return;
+    }
+  }
+}
+
+function attachClaude(ws: ServerWebSocket<ControlSocketData>) {
+  if (attachedClaude && attachedClaude !== ws) {
+    attachedClaude.close(4001, "replaced by a newer Claude session");
+  }
+
+  attachedClaude = ws;
+  ws.data.attached = true;
+  log(`Claude frontend attached (#${ws.data.clientId})`);
+
+  sendStatus(ws);
+
+  if (bufferedMessages.length > 0) {
+    flushBufferedMessages(ws);
+  } else if (tuiConnectionState.canReply()) {
+    sendBridgeMessage(ws, systemMessage("system_ready", currentReadyMessage()));
+  } else if (codexBootstrapped) {
+    sendBridgeMessage(ws, systemMessage("system_waiting", currentWaitingMessage()));
+    sendBridgeMessage(
+      ws,
+      systemMessage(
+        "system_attach_prompt",
+        "📋 请在另一个终端运行以下命令连接 Codex TUI。下一条消息会单独发送完整命令。",
+      ),
+    );
+    sendBridgeMessage(ws, systemMessage("system_attach_cmd", attachCmd));
+  }
+
+  if (tuiConnectionState.canReply()) {
+    notifyCodexClaudeOnline();
+  }
+}
+
+function detachClaude(ws: ServerWebSocket<ControlSocketData>, reason: string) {
+  if (attachedClaude !== ws) return;
+
+  attachedClaude = null;
+  ws.data.attached = false;
+  log(`Claude frontend detached (#${ws.data.clientId}, ${reason})`);
+
+  if (tuiConnectionState.canReply()) {
+    codex.injectMessage("⚠️ Claude Code 已下线。AgentBridge 仍在后台运行；重新打开 Claude 后会自动重连。");
+  }
+}
+
+function emitToClaude(message: BridgeMessage) {
+  if (attachedClaude && attachedClaude.readyState === WebSocket.OPEN) {
+    sendBridgeMessage(attachedClaude, message);
+    return;
+  }
+
+  bufferedMessages.push(message);
+  if (bufferedMessages.length > MAX_BUFFERED_MESSAGES) {
+    bufferedMessages.splice(0, bufferedMessages.length - MAX_BUFFERED_MESSAGES);
+  }
+}
+
+function flushBufferedMessages(ws: ServerWebSocket<ControlSocketData>) {
+  const messages = bufferedMessages.splice(0, bufferedMessages.length);
+  for (const message of messages) {
+    sendBridgeMessage(ws, message);
+  }
+}
+
+function sendBridgeMessage(ws: ServerWebSocket<ControlSocketData>, message: BridgeMessage) {
+  sendProtocolMessage(ws, { type: "codex_to_claude", message });
+}
+
+function sendStatus(ws: ServerWebSocket<ControlSocketData>) {
+  sendProtocolMessage(ws, { type: "status", status: currentStatus() });
+}
+
+function broadcastStatus() {
+  if (!attachedClaude) return;
+  sendStatus(attachedClaude);
+}
+
+function sendProtocolMessage(ws: ServerWebSocket<ControlSocketData>, message: ControlServerMessage) {
+  try {
+    ws.send(JSON.stringify(message));
+  } catch (err: any) {
+    log(`Failed to send control message: ${err.message}`);
+  }
+}
+
+function currentStatus(): DaemonStatus {
+  const snapshot = tuiConnectionState.snapshot();
+  return {
+    bridgeReady: tuiConnectionState.canReply(),
+    tuiConnected: snapshot.tuiConnected,
+    threadId: codex.activeThreadId,
+    queuedMessageCount: bufferedMessages.length,
+    proxyUrl: codex.proxyUrl,
+    appServerUrl: codex.appServerUrl,
+    pid: process.pid,
+  };
+}
+
+function currentWaitingMessage() {
+  return "⏳ AgentBridge 已启动，等待 Codex TUI 连接中。请勿发送消息，收到\"✅\"后再开始通信。";
+}
+
+function currentReadyMessage() {
+  return `✅ Codex TUI 已连接，会话线程已创建 (${codex.activeThreadId}). 桥接现已完全建立，可以使用 reply 工具向 Codex 发送消息。`;
+}
+
+function notifyCodexClaudeOnline() {
+  codex.injectMessage("✅ AgentBridge 已与 Claude Code 建立连接。你现在可以与 Claude 双向通信了。");
+}
+
+function systemMessage(idPrefix: string, content: string): BridgeMessage {
+  return {
+    id: `${idPrefix}_${++nextSystemMessageId}`,
+    source: "codex",
+    content,
+    timestamp: Date.now(),
+  };
+}
+
+function writePidFile() {
+  writeFileSync(PID_FILE, `${process.pid}\n`, "utf-8");
+}
+
+function removePidFile() {
+  try {
+    unlinkSync(PID_FILE);
+  } catch {}
+}
+
+async function bootCodex() {
+  log("Starting AgentBridge daemon...");
+  log(`Codex app-server: ${codex.appServerUrl}`);
+  log(`Codex proxy: ${codex.proxyUrl}`);
+  log(`Control server: ws://127.0.0.1:${CONTROL_PORT}/ws`);
+
+  try {
+    await codex.start();
+    codexBootstrapped = true;
+
+    emitToClaude(systemMessage("system_waiting", currentWaitingMessage()));
+    emitToClaude(
+      systemMessage(
+        "system_attach_prompt",
+        "📋 请在另一个终端运行以下命令连接 Codex TUI。下一条消息会单独发送完整命令。",
+      ),
+    );
+    emitToClaude(systemMessage("system_attach_cmd", attachCmd));
+    broadcastStatus();
+  } catch (err: any) {
+    log(`Failed to start Codex: ${err.message}`);
+    emitToClaude(
+      systemMessage(
+        "system_codex_start_failed",
+        `❌ AgentBridge 无法启动 Codex app-server: ${err.message}`,
+      ),
+    );
+    broadcastStatus();
+  }
+}
+
+function shutdown(reason: string) {
+  if (shuttingDown) return;
+  shuttingDown = true;
+  log(`Shutting down daemon (${reason})...`);
+  tuiConnectionState.dispose(`daemon shutdown (${reason})`);
+  controlServer?.stop();
+  controlServer = null;
+  codex.stop();
+  removePidFile();
+  process.exit(0);
+}
+
+process.on("SIGINT", () => shutdown("SIGINT"));
+process.on("SIGTERM", () => shutdown("SIGTERM"));
+process.on("exit", () => removePidFile());
+process.on("uncaughtException", (err) => {
+  log(`UNCAUGHT EXCEPTION: ${err.stack ?? err.message}`);
+});
+process.on("unhandledRejection", (reason: any) => {
+  log(`UNHANDLED REJECTION: ${reason?.stack ?? reason}`);
+});
+
+function log(msg: string) {
+  const line = `[${new Date().toISOString()}] [AgentBridgeDaemon] ${msg}\n`;
+  process.stderr.write(line);
+  try {
+    appendFileSync(LOG_FILE, line);
+  } catch {}
+}
+
+writePidFile();
+startControlServer();
+void bootCodex();
