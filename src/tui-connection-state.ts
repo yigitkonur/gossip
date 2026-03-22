@@ -21,7 +21,7 @@ export class TuiConnectionState {
   constructor(private readonly options: TuiConnectionStateOptions) {}
 
   canReply() {
-    return this.bridgeReady;
+    return this.bridgeReady && this.tuiConnected;
   }
 
   snapshot(): TuiConnectionSnapshot {

@@ -70,10 +70,7 @@ codex.on("ready", (threadId: string) => {
   log("Bridge fully operational");
 
   emitToClaude(
-    systemMessage(
-      "system_ready",
-      `✅ Codex TUI connected, session thread created (${threadId}). Bridge is fully operational — use the reply tool to send messages to Codex.`,
-    ),
+    systemMessage("system_ready", currentReadyMessage()),
   );
 
   if (attachedClaude) {
@@ -214,14 +211,6 @@ function attachClaude(ws: ServerWebSocket<ControlSocketData>) {
     sendBridgeMessage(ws, systemMessage("system_ready", currentReadyMessage()));
   } else if (codexBootstrapped) {
     sendBridgeMessage(ws, systemMessage("system_waiting", currentWaitingMessage()));
-    sendBridgeMessage(
-      ws,
-      systemMessage(
-        "system_attach_prompt",
-        "📋 Run the following command in another terminal to connect the Codex TUI. The full command will be sent in the next message.",
-      ),
-    );
-    sendBridgeMessage(ws, systemMessage("system_attach_cmd", attachCmd));
   }
 
   if (tuiConnectionState.canReply()) {
@@ -295,15 +284,15 @@ function currentStatus(): DaemonStatus {
 }
 
 function currentWaitingMessage() {
-  return "⏳ AgentBridge started, waiting for Codex TUI to connect. Do not send messages until you see the \"✅\" confirmation.";
+  return `⏳ Waiting for Codex TUI to connect. Run in another terminal:\n${attachCmd}`;
 }
 
 function currentReadyMessage() {
-  return `✅ Codex TUI connected, session thread created (${codex.activeThreadId}). Bridge is fully operational — use the reply tool to send messages to Codex.`;
+  return `✅ Codex TUI connected (${codex.activeThreadId}). Bridge ready.`;
 }
 
 function notifyCodexClaudeOnline() {
-  codex.injectMessage("✅ AgentBridge connected to Claude Code. You can now communicate with Claude bidirectionally.");
+  codex.injectMessage("✅ AgentBridge connected to Claude Code.");
 }
 
 function systemMessage(idPrefix: string, content: string): BridgeMessage {
@@ -336,13 +325,6 @@ async function bootCodex() {
     codexBootstrapped = true;
 
     emitToClaude(systemMessage("system_waiting", currentWaitingMessage()));
-    emitToClaude(
-      systemMessage(
-        "system_attach_prompt",
-        "📋 Run the following command in another terminal to connect the Codex TUI. The full command will be sent in the next message.",
-      ),
-    );
-    emitToClaude(systemMessage("system_attach_cmd", attachCmd));
     broadcastStatus();
   } catch (err: any) {
     log(`Failed to start Codex: ${err.message}`);

@@ -31,12 +31,16 @@ interface PendingRequest {
 }
 
 export class CodexAdapter extends EventEmitter {
+  private static readonly RESPONSE_TRACKING_TTL_MS = 30000;
+
   private proc: ChildProcess | null = null;
   private appServerWs: WebSocket | null = null;
   private tuiWs: ServerWebSocket<TuiSocketData> | null = null;
   private proxyServer: ReturnType<typeof Bun.serve> | null = null;
   private threadId: string | null = null;
-  private nextInjectionId = 900000;
+  // Reserve negative ids for bridge-originated requests so they never collide
+  // with proxy-rewritten TUI request ids.
+  private nextInjectionId = -1;
   private appPort: number;
   private proxyPort: number;
   private tuiConnId = 0; // tracks which TUI connection is "current"
@@ -49,6 +53,8 @@ export class CodexAdapter extends EventEmitter {
   // Proxy-layer id rewriting: upstream uses globally unique ids
   private nextProxyId = 100000;
   private upstreamToClient = new Map<number, { connId: number; clientId: number | string }>();
+  private staleProxyIds = new Map<number, ReturnType<typeof setTimeout>>();
+  private bridgeRequestIds = new Map<number, ReturnType<typeof setTimeout>>();
   private intentionalDisconnect = false;
 
   constructor(appPort = 4500, proxyPort = 4501) {
@@ -102,6 +108,7 @@ export class CodexAdapter extends EventEmitter {
     this.appServerWs = null;
     this.proxyServer?.stop();
     this.proxyServer = null;
+    this.clearResponseTrackingState();
   }
 
   /** Fully stop: disconnect bridge AND kill the Codex process. */
@@ -135,14 +142,17 @@ export class CodexAdapter extends EventEmitter {
       this.log(`WARNING: injecting while a turn is already active (thread ${this.threadId})`);
     }
     this.log(`Injecting message into Codex (${text.length} chars)`);
+    const requestId = this.nextInjectionId--;
+    this.trackBridgeRequestId(requestId);
     try {
       this.appServerWs.send(JSON.stringify({
         method: "turn/start",
-        id: this.nextInjectionId++,
+        id: requestId,
         params: { threadId: this.threadId, input: [{ type: "text", text }] },
       }));
       return true;
     } catch (err: any) {
+      this.untrackBridgeRequestId(requestId);
       this.log(`Injection send failed: ${err.message}`);
       return false;
     }
@@ -178,28 +188,8 @@ export class CodexAdapter extends EventEmitter {
       appWs.onmessage = (event) => {
         const data = typeof event.data === "string" ? event.data : event.data.toString();
 
-        let forwarded = data;
-        try {
-          const parsed = JSON.parse(data);
-
-          // Restore original client id and resolve connection ownership
-          const mapping = (parsed.id !== undefined) ? this.upstreamToClient.get(parsed.id) : undefined;
-          if (mapping) {
-            this.upstreamToClient.delete(parsed.id);
-            // Only process response if it belongs to the current TUI connection
-            if (mapping.connId !== this.tuiConnId) {
-              this.log(`Dropping stale response (upstream id ${parsed.id}, from conn #${mapping.connId}, current #${this.tuiConnId})`);
-              return;
-            }
-            parsed.id = mapping.clientId;
-            forwarded = this.patchResponse(parsed, JSON.stringify(parsed));
-            this.interceptServerMessage(parsed, mapping.connId);
-          } else {
-            // Notifications (no id) — always forward
-            forwarded = this.patchResponse(parsed, data);
-            this.interceptServerMessage(parsed);
-          }
-        } catch {}
+        const forwarded = this.handleAppServerPayload(data);
+        if (forwarded === null) return;
 
         // Forward to current TUI connection
         if (this.tuiWs) {
@@ -215,6 +205,7 @@ export class CodexAdapter extends EventEmitter {
       appWs.onclose = () => {
         this.log("App-server connection closed");
         this.appServerWs = null;
+        this.clearResponseTrackingState();
         if (!this.intentionalDisconnect) {
           this.scheduleReconnect();
         }
@@ -295,26 +286,10 @@ export class CodexAdapter extends EventEmitter {
       this.log(`TUI disconnected (conn #${connId})`);
       this.tuiWs = null;
       this.emit("tuiDisconnected", connId);
-
-      // Clear pending request tracking and upstream id mappings for this connection
-      const prefix = `${connId}:`;
-      for (const key of this.pendingRequests.keys()) {
-        if (key.startsWith(prefix)) this.pendingRequests.delete(key);
-      }
-      for (const [upId, mapping] of this.upstreamToClient.entries()) {
-        if (mapping.connId === connId) this.upstreamToClient.delete(upId);
-      }
     } else {
       this.log(`Stale TUI disconnected (conn #${connId}, current is #${this.tuiConnId})`);
-      // Clean up stale connection's pending state
-      const prefix = `${connId}:`;
-      for (const key of this.pendingRequests.keys()) {
-        if (key.startsWith(prefix)) this.pendingRequests.delete(key);
-      }
-      for (const [upId, mapping] of this.upstreamToClient.entries()) {
-        if (mapping.connId === connId) this.upstreamToClient.delete(upId);
-      }
     }
+    this.retireConnectionState(connId);
     // Do NOT close app-server connection — TUI will reconnect shortly
   }
 
@@ -357,6 +332,58 @@ export class CodexAdapter extends EventEmitter {
   }
 
   // ── Response Patching ──────────────────────────────────────
+
+  private handleAppServerPayload(raw: string): string | null {
+    try {
+      const parsed = JSON.parse(raw);
+
+      if (parsed.id === undefined) {
+        const forwarded = this.patchResponse(parsed, raw);
+        this.interceptServerMessage(parsed);
+        return forwarded;
+      }
+
+      return this.handleAppServerResponse(parsed, raw);
+    } catch {
+      return raw;
+    }
+  }
+
+  private handleAppServerResponse(parsed: any, raw: string): string | null {
+    const responseId = parsed.id;
+    const mapping = typeof responseId === "number" ? this.upstreamToClient.get(responseId) : undefined;
+
+    if (mapping) {
+      this.upstreamToClient.delete(responseId);
+
+      if (mapping.connId !== this.tuiConnId) {
+        this.log(`Dropping stale response (upstream id ${responseId}, from conn #${mapping.connId}, current #${this.tuiConnId})`);
+        return null;
+      }
+
+      parsed.id = mapping.clientId;
+      const forwarded = this.patchResponse(parsed, JSON.stringify(parsed));
+      this.interceptServerMessage(parsed, mapping.connId);
+      return forwarded;
+    }
+
+    if (typeof responseId === "number" && this.consumeBridgeRequestId(responseId)) {
+      if (parsed.error) {
+        this.log(`Bridge-originated request failed (id ${responseId}): ${parsed.error.message ?? "unknown error"}`);
+      } else {
+        this.log(`Bridge-originated request completed (id ${responseId})`);
+      }
+      return null;
+    }
+
+    if (typeof responseId === "number" && this.consumeStaleProxyId(responseId)) {
+      this.log(`Dropping stale response for retired upstream id ${responseId}`);
+      return null;
+    }
+
+    this.log(`Dropping unmatched app-server response id ${String(responseId)}`);
+    return null;
+  }
 
   private patchResponse(parsed: any, raw: string): string {
     if (parsed.error && parsed.id !== undefined) {
@@ -558,6 +585,74 @@ export class CodexAdapter extends EventEmitter {
   private requestKey(id: unknown): string | null {
     if (typeof id === "number" || typeof id === "string") return String(id);
     return null;
+  }
+
+  private retireConnectionState(connId: number) {
+    const prefix = `${connId}:`;
+    for (const key of this.pendingRequests.keys()) {
+      if (key.startsWith(prefix)) this.pendingRequests.delete(key);
+    }
+
+    for (const [upId, mapping] of this.upstreamToClient.entries()) {
+      if (mapping.connId !== connId) continue;
+      this.upstreamToClient.delete(upId);
+      this.trackStaleProxyId(upId);
+    }
+  }
+
+  private trackStaleProxyId(proxyId: number) {
+    this.clearTrackedId(this.staleProxyIds, proxyId);
+
+    const timer = setTimeout(() => {
+      this.staleProxyIds.delete(proxyId);
+    }, CodexAdapter.RESPONSE_TRACKING_TTL_MS);
+    timer.unref?.();
+    this.staleProxyIds.set(proxyId, timer);
+  }
+
+  private consumeStaleProxyId(proxyId: number) {
+    return this.clearTrackedId(this.staleProxyIds, proxyId);
+  }
+
+  private trackBridgeRequestId(requestId: number) {
+    this.clearTrackedId(this.bridgeRequestIds, requestId);
+
+    const timer = setTimeout(() => {
+      this.bridgeRequestIds.delete(requestId);
+    }, CodexAdapter.RESPONSE_TRACKING_TTL_MS);
+    timer.unref?.();
+    this.bridgeRequestIds.set(requestId, timer);
+  }
+
+  private consumeBridgeRequestId(requestId: number) {
+    return this.clearTrackedId(this.bridgeRequestIds, requestId);
+  }
+
+  private untrackBridgeRequestId(requestId: number) {
+    this.clearTrackedId(this.bridgeRequestIds, requestId);
+  }
+
+  private clearTrackedId(store: Map<number, ReturnType<typeof setTimeout>>, id: number) {
+    const timer = store.get(id);
+    if (!timer) return false;
+    clearTimeout(timer);
+    store.delete(id);
+    return true;
+  }
+
+  private clearResponseTrackingState() {
+    this.pendingRequests.clear();
+    this.upstreamToClient.clear();
+
+    for (const timer of this.staleProxyIds.values()) {
+      clearTimeout(timer);
+    }
+    this.staleProxyIds.clear();
+
+    for (const timer of this.bridgeRequestIds.values()) {
+      clearTimeout(timer);
+    }
+    this.bridgeRequestIds.clear();
   }
 
   /**
