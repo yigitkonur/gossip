@@ -193,7 +193,9 @@ export class CodexAdapter extends EventEmitter {
 
         // Forward to current TUI connection
         if (this.tuiWs) {
-          try { this.tuiWs.send(forwarded); } catch {}
+          try { this.tuiWs.send(forwarded); } catch (e: any) {
+            this.log(`Failed to forward message to TUI: ${e.message}`);
+          }
         }
       };
 

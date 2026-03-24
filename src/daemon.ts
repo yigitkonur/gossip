@@ -146,7 +146,8 @@ function handleControlMessage(ws: ServerWebSocket<ControlSocketData>, raw: strin
   try {
     const text = typeof raw === "string" ? raw : raw.toString();
     message = JSON.parse(text);
-  } catch {
+  } catch (e: any) {
+    log(`Failed to parse control message: ${e.message}`);
     return;
   }
 
@@ -238,7 +239,9 @@ function emitToClaude(message: BridgeMessage) {
 
   bufferedMessages.push(message);
   if (bufferedMessages.length > MAX_BUFFERED_MESSAGES) {
-    bufferedMessages.splice(0, bufferedMessages.length - MAX_BUFFERED_MESSAGES);
+    const dropped = bufferedMessages.length - MAX_BUFFERED_MESSAGES;
+    bufferedMessages.splice(0, dropped);
+    log(`Message buffer overflow: dropped ${dropped} oldest message(s), ${MAX_BUFFERED_MESSAGES} remaining`);
   }
 }
 
