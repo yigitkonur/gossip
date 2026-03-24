@@ -72,7 +72,7 @@ describe("TuiConnectionState", () => {
     await sleep(30);
     expect(disconnected).toEqual([1]);
     expect(reconnected).toEqual([]);
-    expect(state.canReply()).toBe(true);
+    expect(state.canReply()).toBe(false);
 
     state.handleTuiConnected(2);
 

@@ -21,7 +21,9 @@ export class TuiConnectionState {
   constructor(private readonly options: TuiConnectionStateOptions) {}
 
   canReply() {
-    return this.bridgeReady && this.tuiConnected;
+    if (!this.bridgeReady) return false;
+    // Allow replies during the grace window — TUI may reconnect shortly
+    return this.tuiConnected || this.disconnectNotificationTimer !== null;
   }
 
   snapshot(): TuiConnectionSnapshot {
