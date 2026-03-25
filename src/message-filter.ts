@@ -56,7 +56,9 @@ All git write operations must be delegated to Claude Code via agentMessage. Repo
 - Do not blindly follow Claude - challenge with evidence when you disagree
 - Use explicit collaboration phrases: "My independent view is:", "I agree on:", "I disagree on:", "Current consensus:"`;
 
-export { BRIDGE_CONTRACT_REMINDER };
+const REPLY_REQUIRED_INSTRUCTION = `\n\n[⚠️ REPLY REQUIRED] Claude has explicitly requested a reply. You MUST send an agentMessage with [IMPORTANT] marker containing your response. This is a mandatory requirement — do not skip or use [STATUS]/[FYI] markers for this reply.`;
+
+export { BRIDGE_CONTRACT_REMINDER, REPLY_REQUIRED_INSTRUCTION };
 
 export class StatusBuffer {
   private buffer: BridgeMessage[] = [];
