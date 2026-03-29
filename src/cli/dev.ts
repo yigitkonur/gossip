@@ -1,19 +1,14 @@
 import { execFileSync } from "node:child_process";
-import { resolve, dirname } from "node:path";
+import { resolve } from "node:path";
 import { existsSync, cpSync, rmSync } from "node:fs";
 import { homedir } from "node:os";
 import { MARKETPLACE_NAME, PLUGIN_NAME } from "../cli";
-
-/** Resolve the project root from the CLI module location (not cwd). */
-function getProjectRoot(): string {
-  // src/cli/dev.ts -> project root is ../../
-  return resolve(dirname(import.meta.dir), "..");
-}
+import { findPackageRoot, registerMarketplace } from "./pkg-root";
 
 export async function runDev() {
   console.log("AgentBridge Dev Setup\n");
 
-  const projectRoot = getProjectRoot();
+  const projectRoot = findPackageRoot();
   const marketplacePath = resolve(projectRoot, ".claude-plugin", "marketplace.json");
   const pluginDir = resolve(projectRoot, "plugins", "agentbridge");
   const pluginManifest = resolve(pluginDir, ".claude-plugin", "plugin.json");
@@ -30,22 +25,13 @@ export async function runDev() {
   }
   console.log(`  Plugin source: ${pluginDir}`);
 
-  // Step 2: Register local marketplace (idempotent)
+  // Step 2: Register local marketplace (idempotent — safe to call repeatedly)
   console.log("\nRegistering local marketplace...");
   try {
-    const listOutput = execFileSync("claude", ["plugin", "marketplace", "list"], { encoding: "utf-8" });
-    if (listOutput.includes(MARKETPLACE_NAME)) {
-      console.log(`  Marketplace '${MARKETPLACE_NAME}' already registered.`);
-    } else {
-      execFileSync("claude", ["plugin", "marketplace", "add", projectRoot], { stdio: "inherit" });
-    }
-  } catch {
-    try {
-      execFileSync("claude", ["plugin", "marketplace", "add", projectRoot], { stdio: "inherit" });
-    } catch (e: any) {
-      console.error(`  ERROR: Failed to register marketplace: ${e.message}`);
-      process.exit(1);
-    }
+    registerMarketplace(projectRoot);
+  } catch (e: any) {
+    console.error(`  ERROR: Failed to register marketplace: ${e.message}`);
+    process.exit(1);
   }
 
   // Step 3: Install plugin, then force-sync local files to cache

@@ -1,6 +1,7 @@
-import { execSync } from "node:child_process";
+import { execSync, execFileSync } from "node:child_process";
 import { ConfigService } from "../config-service";
 import { MARKETPLACE_NAME, PLUGIN_NAME } from "../cli";
+import { findPackageRoot, registerMarketplace } from "./pkg-root";
 
 const MIN_CLAUDE_VERSION = "2.1.80";
 
@@ -28,17 +29,18 @@ export async function runInit() {
   }
   console.log("");
 
-  // Step 3: Install plugin (best-effort)
+  // Step 3: Register marketplace + install plugin (best-effort)
   console.log("Installing AgentBridge plugin...");
   try {
-    execSync(`claude plugin install ${PLUGIN_NAME}@${MARKETPLACE_NAME}`, {
+    registerMarketplace(findPackageRoot());
+    execFileSync("claude", ["plugin", "install", `${PLUGIN_NAME}@${MARKETPLACE_NAME}`], {
       stdio: "inherit",
     });
     console.log("  Plugin installed successfully.");
   } catch {
-    console.log("  Plugin install skipped (marketplace may not be configured yet).");
+    console.log("  Plugin install skipped (marketplace registration or install failed).");
     console.log("  You can install it later with:");
-    console.log(`    claude plugin install ${PLUGIN_NAME}@${MARKETPLACE_NAME}`);
+    console.log(`    abg dev   # registers marketplace and installs plugin`);
   }
   console.log("");
 
