@@ -41,6 +41,7 @@ type Daemon struct {
 	filter   filter.Mode
 
 	statusBuf *filter.StatusBuffer
+	stateMu   sync.Mutex
 
 	attachedMu               sync.Mutex
 	claudeAttached           bool
@@ -175,19 +176,28 @@ func (d *Daemon) handleCodexEvent(ctx context.Context, ev codex.Event) {
 		d.broadcastSystem(ctx, "system_turn_started", "⏳ Codex is working on the current task.")
 	case codex.EventTurnCompleted:
 		d.statusBuf.Flush("turn completed")
-		if d.replyRequired && !d.replyReceivedDuringTurn {
-			d.broadcastSystem(ctx, "system_reply_missing", "⚠️ Codex completed the turn without sending a reply while require_reply was set.")
-		}
+		d.stateMu.Lock()
+		replyRequired := d.replyRequired
+		replyReceived := d.replyReceivedDuringTurn
 		d.replyRequired = false
 		d.replyReceivedDuringTurn = false
+		d.stateMu.Unlock()
+		if replyRequired && !replyReceived {
+			d.broadcastSystem(ctx, "system_reply_missing", "⚠️ Codex completed the turn without sending a reply while require_reply was set.")
+		}
 		d.broadcastSystem(ctx, "system_turn_completed", "✅ Codex finished the current turn. You can reply now if needed.")
 	case codex.EventAgentMessage:
 		msg, ok := ev.MessageToBridge()
 		if !ok {
 			return
 		}
-		if d.replyRequired {
+		d.stateMu.Lock()
+		replyRequired := d.replyRequired
+		if replyRequired {
 			d.replyReceivedDuringTurn = true
+		}
+		d.stateMu.Unlock()
+		if replyRequired {
 			d.statusBuf.Flush("reply-required message arrived")
 			d.control.Broadcast(ctx, msg)
 			return
@@ -211,20 +221,23 @@ func (d *Daemon) handleCodexEvent(ctx context.Context, ev codex.Event) {
 }
 
 func (d *Daemon) scheduleIdleShutdown() {
-	d.cancelIdleShutdown()
-	d.attachedMu.Lock()
+	d.stateMu.Lock()
+	if d.idleShutdownTimer != nil {
+		d.idleShutdownTimer.Stop()
+		d.idleShutdownTimer = nil
+	}
 	attached := d.claudeAttached
-	d.attachedMu.Unlock()
+	d.stateMu.Unlock()
 	if attached {
 		return
 	}
 	if d.proxy != nil && d.proxy.ConnectionCount() > 0 {
 		return
 	}
-	d.idleShutdownTimer = time.AfterFunc(d.opts.IdleShutdown, func() {
-		d.attachedMu.Lock()
+	timer := time.AfterFunc(d.opts.IdleShutdown, func() {
+		d.stateMu.Lock()
 		attached := d.claudeAttached
-		d.attachedMu.Unlock()
+		d.stateMu.Unlock()
 		if attached {
 			return
 		}
@@ -235,9 +248,14 @@ func (d *Daemon) scheduleIdleShutdown() {
 			d.runCancel()
 		}
 	})
+	d.stateMu.Lock()
+	d.idleShutdownTimer = timer
+	d.stateMu.Unlock()
 }
 
 func (d *Daemon) cancelIdleShutdown() {
+	d.stateMu.Lock()
+	defer d.stateMu.Unlock()
 	if d.idleShutdownTimer != nil {
 		d.idleShutdownTimer.Stop()
 		d.idleShutdownTimer = nil
@@ -246,20 +264,30 @@ func (d *Daemon) cancelIdleShutdown() {
 
 func (d *Daemon) scheduleClaudeDisconnectNotification() {
 	d.clearPendingClaudeDisconnect()
-	d.claudeDisconnectTimer = time.AfterFunc(5*time.Second, func() {
-		d.attachedMu.Lock()
+	timer := time.AfterFunc(5*time.Second, func() {
+		d.stateMu.Lock()
 		attached := d.claudeAttached
-		d.attachedMu.Unlock()
-		if attached || !d.tuiState.CanReply() || !d.claudeOnlineNoticeSent || d.codex == nil {
+		onlineNoticeSent := d.claudeOnlineNoticeSent
+		offlineShown := d.claudeOfflineNoticeShown
+		codexClient := d.codex
+		d.stateMu.Unlock()
+		if attached || !d.tuiState.CanReply() || !onlineNoticeSent || codexClient == nil {
 			return
 		}
-		_, _ = d.codex.InjectMessage(context.Background(), "⚠️ Claude Code went offline. AgentBridge is still running in the background; it will reconnect automatically when Claude reopens.")
+		_, _ = codexClient.InjectMessage(context.Background(), "⚠️ Claude Code went offline. AgentBridge is still running in the background; it will reconnect automatically when Claude reopens.")
+		d.stateMu.Lock()
 		d.claudeOnlineNoticeSent = false
-		d.claudeOfflineNoticeShown = true
+		d.claudeOfflineNoticeShown = true || offlineShown
+		d.stateMu.Unlock()
 	})
+	d.stateMu.Lock()
+	d.claudeDisconnectTimer = timer
+	d.stateMu.Unlock()
 }
 
 func (d *Daemon) clearPendingClaudeDisconnect() {
+	d.stateMu.Lock()
+	defer d.stateMu.Unlock()
 	if d.claudeDisconnectTimer != nil {
 		d.claudeDisconnectTimer.Stop()
 		d.claudeDisconnectTimer = nil
@@ -290,29 +318,34 @@ func (d *Daemon) broadcastSystem(ctx context.Context, id, content string) {
 
 // OnClaudeConnect implements control.Handler.
 func (d *Daemon) OnClaudeConnect() {
-	d.attachedMu.Lock()
+	d.stateMu.Lock()
 	d.claudeAttached = true
-	d.attachedMu.Unlock()
+	d.stateMu.Unlock()
 	d.cancelIdleShutdown()
 	d.clearPendingClaudeDisconnect()
 	if d.statusBuf != nil {
 		d.statusBuf.Flush("claude reconnected")
 	}
-	if d.tuiState.CanReply() && (!d.claudeOnlineNoticeSent || d.claudeOfflineNoticeShown) && d.codex != nil {
-		_, _ = d.codex.InjectMessage(context.Background(), "✅ Claude Code is online, bridge restored. Bidirectional communication can continue.")
+	d.stateMu.Lock()
+	needNotify := d.tuiState.CanReply() && (!d.claudeOnlineNoticeSent || d.claudeOfflineNoticeShown) && d.codex != nil
+	codexClient := d.codex
+	d.stateMu.Unlock()
+	if needNotify {
+		_, _ = codexClient.InjectMessage(context.Background(), "✅ Claude Code is online, bridge restored. Bidirectional communication can continue.")
+		d.stateMu.Lock()
 		d.claudeOnlineNoticeSent = true
 		d.claudeOfflineNoticeShown = false
+		d.stateMu.Unlock()
 	}
 	if d.opts.Logger != nil {
 		d.opts.Logger("claude frontend attached")
 	}
 }
 
-// OnClaudeDisconnect implements control.Handler.
 func (d *Daemon) OnClaudeDisconnect(reason string) {
-	d.attachedMu.Lock()
+	d.stateMu.Lock()
 	d.claudeAttached = false
-	d.attachedMu.Unlock()
+	d.stateMu.Unlock()
 	d.scheduleIdleShutdown()
 	d.scheduleClaudeDisconnectNotification()
 	if d.opts.Logger != nil {
@@ -320,7 +353,6 @@ func (d *Daemon) OnClaudeDisconnect(reason string) {
 	}
 }
 
-// OnClaudeToCodex implements control.Handler.
 func (d *Daemon) OnClaudeToCodex(ctx context.Context, msg protocol.BridgeMessage, requireReply bool) (bool, string) {
 	if !d.tuiState.CanReply() {
 		return false, "Codex is not ready. Wait for TUI to connect and create a thread."
@@ -328,13 +360,14 @@ func (d *Daemon) OnClaudeToCodex(ctx context.Context, msg protocol.BridgeMessage
 	body := msg.Content + "\n\n" + filter.BridgeContractReminder
 	if requireReply {
 		body += filter.ReplyRequiredInstruction
+		d.stateMu.Lock()
 		d.replyRequired = true
 		d.replyReceivedDuringTurn = false
+		d.stateMu.Unlock()
 	}
 	return d.codex.InjectMessage(ctx, body)
 }
 
-// Snapshot implements control.Handler.
 func (d *Daemon) Snapshot() control.Status {
 	tuiConnected := false
 	if d.proxy != nil {

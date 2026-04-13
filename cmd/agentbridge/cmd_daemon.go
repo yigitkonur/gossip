@@ -13,6 +13,18 @@ import (
 	"github.com/spf13/cobra"
 )
 
+func daemonOptionsFromConfig(sd *statedir.StateDir, cfg config.Config) daemon.Options {
+	return daemon.Options{
+		StateDir:     sd,
+		AppPort:      cfg.Daemon.Port,
+		ProxyPort:    cfg.Daemon.ProxyPort,
+		ControlPort:  controlPort(),
+		FilterMode:   filter.ModeFiltered,
+		Logger:       logToStderr,
+		IdleShutdown: time.Duration(cfg.IdleShutdownSeconds) * time.Second,
+	}
+}
+
 func newDaemonCmd() *cobra.Command {
 	return &cobra.Command{
 		Use:    "daemon",
