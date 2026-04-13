@@ -1,11 +1,16 @@
 import { EventEmitter } from "node:events";
+import { appendFileSync } from "node:fs";
 import type { BridgeMessage } from "./types";
 import type { ControlClientMessage, ControlServerMessage, DaemonStatus } from "./control-protocol";
 
 interface DaemonClientEvents {
   codexMessage: [BridgeMessage];
-  disconnect: [];
+  disconnect: [{ code: number; reason: string; uptimeMs: number }];
   status: [DaemonStatus];
+}
+
+export interface DaemonClientOptions {
+  logFile?: string;
 }
 
 let nextSocketId = 0;
@@ -14,6 +19,7 @@ export class DaemonClient extends EventEmitter<DaemonClientEvents> {
   private ws: WebSocket | null = null;
   private wsId: number = 0; // Track socket identity for debugging
   private nextRequestId = 1;
+  private readonly logFile?: string;
   private pendingReplies = new Map<
     string,
     {
@@ -22,8 +28,9 @@ export class DaemonClient extends EventEmitter<DaemonClientEvents> {
     }
   >();
 
-  constructor(private readonly url: string) {
+  constructor(private readonly url: string, options: DaemonClientOptions = {}) {
     super();
+    this.logFile = options.logFile;
   }
 
   async connect() {
@@ -36,35 +43,51 @@ export class DaemonClient extends EventEmitter<DaemonClientEvents> {
     if (this.ws) {
       const state = this.ws.readyState;
       this.log(`connect() closing lingering ws#${this.wsId} (readyState=${state})`);
-      try { this.ws.close(); } catch {}
+      try { this.ws.close(); } catch (err: any) {
+        this.log(`connect() error closing lingering ws#${this.wsId}: ${err?.message ?? "unknown"}`);
+      }
       this.ws = null;
     }
 
     const socketId = ++nextSocketId;
+    const attemptStart = Date.now();
 
     await new Promise<void>((resolve, reject) => {
-      const ws = new WebSocket(this.url);
+      let ws: WebSocket;
+      try {
+        ws = new WebSocket(this.url);
+      } catch (err: any) {
+        this.log(`ws#${socketId} construction failed: ${err?.message ?? "unknown"} (url=${this.url})`);
+        reject(err);
+        return;
+      }
       let settled = false;
 
       ws.onopen = () => {
         settled = true;
         this.ws = ws;
         this.wsId = socketId;
-        this.attachSocketHandlers(ws, socketId);
-        this.log(`ws#${socketId} opened and attached`);
+        const openedAt = Date.now();
+        this.attachSocketHandlers(ws, socketId, openedAt);
+        this.log(`ws#${socketId} opened and attached (connect took ${openedAt - attemptStart}ms)`);
         resolve();
       };
 
-      ws.onerror = () => {
+      ws.onerror = (event: Event) => {
         if (settled) return;
         settled = true;
-        reject(new Error(`Failed to connect to AgentBridge daemon at ${this.url}`));
+        const errDetail = (event as ErrorEvent).message ?? "unknown";
+        this.log(`ws#${socketId} connect onerror: ${errDetail} (url=${this.url}, elapsed=${Date.now() - attemptStart}ms)`);
+        reject(new Error(`Failed to connect to AgentBridge daemon at ${this.url}: ${errDetail}`));
       };
 
-      ws.onclose = () => {
+      ws.onclose = (event: CloseEvent) => {
         if (settled) return;
         settled = true;
-        reject(new Error(`AgentBridge daemon closed the connection during startup (${this.url})`));
+        this.log(
+          `ws#${socketId} closed during startup (code=${event.code}, reason=${event.reason || "none"}, clean=${event.wasClean}, elapsed=${Date.now() - attemptStart}ms)`,
+        );
+        reject(new Error(`AgentBridge daemon closed the connection during startup (${this.url}, code=${event.code})`));
       };
     });
   }
@@ -110,7 +133,7 @@ export class DaemonClient extends EventEmitter<DaemonClientEvents> {
     });
   }
 
-  private attachSocketHandlers(ws: WebSocket, socketId: number) {
+  private attachSocketHandlers(ws: WebSocket, socketId: number, openedAt: number) {
     ws.onmessage = (event) => {
       const raw = typeof event.data === "string" ? event.data : event.data.toString();
 
@@ -141,18 +164,27 @@ export class DaemonClient extends EventEmitter<DaemonClientEvents> {
 
     ws.onclose = (event) => {
       const isCurrent = this.ws === ws;
-      this.log(`ws#${socketId} onclose (code=${event.code}, reason=${event.reason || "none"}, isCurrent=${isCurrent}, currentWsId=${this.wsId})`);
+      // Uptime is captured per-socket via closure so stale/replaced sockets
+      // can't read a newer socket's open time if their onclose fires late.
+      const uptimeMs = Date.now() - openedAt;
+      const uptime = `${(uptimeMs / 1000).toFixed(1)}s`;
+      this.log(
+        `ws#${socketId} onclose (code=${event.code}, reason=${event.reason || "none"}, clean=${event.wasClean}, uptime=${uptime}, isCurrent=${isCurrent}, currentWsId=${this.wsId}, pendingReplies=${this.pendingReplies.size})`,
+      );
       if (isCurrent) {
         this.ws = null;
         this.rejectPendingReplies("AgentBridge daemon disconnected.");
-        this.emit("disconnect");
+        this.emit("disconnect", { code: event.code, reason: event.reason || "", uptimeMs });
       }
       // If this.ws !== ws, this socket was replaced by a newer connection —
       // don't emit "disconnect" or it will trigger a reconnect loop.
     };
 
-    ws.onerror = () => {
-      // The close handler is the single place that tears down pending state.
+    ws.onerror = (event: Event) => {
+      // The close handler is the single place that tears down pending state,
+      // but capture the error detail for root-cause analysis.
+      const errDetail = (event as ErrorEvent).message ?? "unknown";
+      this.log(`ws#${socketId} onerror: ${errDetail} (readyState=${ws.readyState}, isCurrent=${this.ws === ws})`);
     };
   }
 
@@ -173,6 +205,10 @@ export class DaemonClient extends EventEmitter<DaemonClientEvents> {
   }
 
   private log(msg: string) {
-    process.stderr.write(`[${new Date().toISOString()}] [DaemonClient] ${msg}\n`);
+    const line = `[${new Date().toISOString()}] [DaemonClient] ${msg}\n`;
+    process.stderr.write(line);
+    if (this.logFile) {
+      try { appendFileSync(this.logFile, line); } catch {}
+    }
   }
 }
