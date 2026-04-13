@@ -19,6 +19,25 @@ import (
 	"github.com/raysonmeng/agent-bridge/internal/tui"
 )
 
+type stopTimer interface {
+	Stop() bool
+}
+
+type afterFunc func(time.Duration, func()) stopTimer
+
+type realTimer struct{ *time.Timer }
+
+func (t realTimer) Stop() bool {
+	if t.Timer == nil {
+		return false
+	}
+	return t.Timer.Stop()
+}
+
+func defaultAfterFunc(d time.Duration, fn func()) stopTimer {
+	return realTimer{Timer: time.AfterFunc(d, fn)}
+}
+
 // Options configures a daemon run.
 type Options struct {
 	StateDir     *statedir.StateDir
@@ -42,11 +61,11 @@ type Daemon struct {
 
 	statusBuf *filter.StatusBuffer
 	stateMu   sync.Mutex
+	afterFunc afterFunc
 
-	attachedMu               sync.Mutex
 	claudeAttached           bool
-	idleShutdownTimer        *time.Timer
-	claudeDisconnectTimer    *time.Timer
+	idleShutdownTimer        stopTimer
+	claudeDisconnectTimer    stopTimer
 	claudeOnlineNoticeSent   bool
 	claudeOfflineNoticeShown bool
 	runCancel                context.CancelFunc
@@ -72,15 +91,19 @@ func New(opts Options) *Daemon {
 	if opts.IdleShutdown == 0 {
 		opts.IdleShutdown = 30 * time.Second
 	}
-	d := &Daemon{opts: opts, filter: opts.FilterMode}
+	d := &Daemon{opts: opts, filter: opts.FilterMode, afterFunc: defaultAfterFunc}
 	d.tuiState = tui.NewState(tui.Options{
 		DisconnectGrace: 2500 * time.Millisecond,
 		Logger:          opts.Logger,
 		OnDisconnectPersisted: func(id int64) {
-			d.control.Broadcast(context.Background(), protocol.BridgeMessage{ID: fmt.Sprintf("system_tui_disconnected_%d", time.Now().UnixMilli()), Source: protocol.SourceCodex, Content: fmt.Sprintf("⚠️ Codex TUI disconnected (conn #%d). Codex is still running in the background — reconnect the TUI to resume.", id), Timestamp: time.Now().UnixMilli()})
+			if d.control != nil {
+				d.control.Broadcast(context.Background(), protocol.BridgeMessage{ID: fmt.Sprintf("system_tui_disconnected_%d", time.Now().UnixMilli()), Source: protocol.SourceCodex, Content: fmt.Sprintf("⚠️ Codex TUI disconnected (conn #%d). Codex is still running in the background — reconnect the TUI to resume.", id), Timestamp: time.Now().UnixMilli()})
+			}
 		},
 		OnReconnectAfterNotice: func(id int64) {
-			d.control.Broadcast(context.Background(), protocol.BridgeMessage{ID: fmt.Sprintf("system_tui_reconnected_%d", time.Now().UnixMilli()), Source: protocol.SourceCodex, Content: fmt.Sprintf("✅ Codex TUI reconnected (conn #%d). Bridge restored, communication can continue.", id), Timestamp: time.Now().UnixMilli()})
+			if d.control != nil {
+				d.control.Broadcast(context.Background(), protocol.BridgeMessage{ID: fmt.Sprintf("system_tui_reconnected_%d", time.Now().UnixMilli()), Source: protocol.SourceCodex, Content: fmt.Sprintf("✅ Codex TUI reconnected (conn #%d). Bridge restored, communication can continue.", id), Timestamp: time.Now().UnixMilli()})
+			}
 			if d.codex != nil {
 				_, _ = d.codex.InjectMessage(context.Background(), "✅ Claude Code is still online, bridge restored. Bidirectional communication can continue.")
 			}
@@ -226,16 +249,22 @@ func (d *Daemon) scheduleIdleShutdown() {
 		d.idleShutdownTimer.Stop()
 		d.idleShutdownTimer = nil
 	}
-	attached := d.claudeAttached
-	d.stateMu.Unlock()
-	if attached {
+	if d.claudeAttached {
+		d.stateMu.Unlock()
 		return
 	}
 	if d.proxy != nil && d.proxy.ConnectionCount() > 0 {
+		d.stateMu.Unlock()
 		return
 	}
-	timer := time.AfterFunc(d.opts.IdleShutdown, func() {
+	var timer stopTimer
+	timer = d.afterFunc(d.opts.IdleShutdown, func() {
 		d.stateMu.Lock()
+		if d.idleShutdownTimer != timer {
+			d.stateMu.Unlock()
+			return
+		}
+		d.idleShutdownTimer = nil
 		attached := d.claudeAttached
 		d.stateMu.Unlock()
 		if attached {
@@ -248,7 +277,6 @@ func (d *Daemon) scheduleIdleShutdown() {
 			d.runCancel()
 		}
 	})
-	d.stateMu.Lock()
 	d.idleShutdownTimer = timer
 	d.stateMu.Unlock()
 }
@@ -263,12 +291,21 @@ func (d *Daemon) cancelIdleShutdown() {
 }
 
 func (d *Daemon) scheduleClaudeDisconnectNotification() {
-	d.clearPendingClaudeDisconnect()
-	timer := time.AfterFunc(5*time.Second, func() {
+	d.stateMu.Lock()
+	if d.claudeDisconnectTimer != nil {
+		d.claudeDisconnectTimer.Stop()
+		d.claudeDisconnectTimer = nil
+	}
+	var timer stopTimer
+	timer = d.afterFunc(5*time.Second, func() {
 		d.stateMu.Lock()
+		if d.claudeDisconnectTimer != timer {
+			d.stateMu.Unlock()
+			return
+		}
+		d.claudeDisconnectTimer = nil
 		attached := d.claudeAttached
 		onlineNoticeSent := d.claudeOnlineNoticeSent
-		offlineShown := d.claudeOfflineNoticeShown
 		codexClient := d.codex
 		d.stateMu.Unlock()
 		if attached || !d.tuiState.CanReply() || !onlineNoticeSent || codexClient == nil {
@@ -277,10 +314,9 @@ func (d *Daemon) scheduleClaudeDisconnectNotification() {
 		_, _ = codexClient.InjectMessage(context.Background(), "⚠️ Claude Code went offline. AgentBridge is still running in the background; it will reconnect automatically when Claude reopens.")
 		d.stateMu.Lock()
 		d.claudeOnlineNoticeSent = false
-		d.claudeOfflineNoticeShown = true || offlineShown
+		d.claudeOfflineNoticeShown = true
 		d.stateMu.Unlock()
 	})
-	d.stateMu.Lock()
 	d.claudeDisconnectTimer = timer
 	d.stateMu.Unlock()
 }
