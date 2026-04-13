@@ -20,6 +20,8 @@ const (
 	EventAgentMessage
 	// EventApprovalRequest fires when the server asks for an approval.
 	EventApprovalRequest
+	// EventProcessExit fires when the Codex app-server process exits.
+	EventProcessExit
 )
 
 // Event is a typed value delivered on Client.Events().

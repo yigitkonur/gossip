@@ -114,6 +114,7 @@ func (c *Client) Start(ctx context.Context) error {
 	go func() {
 		_ = c.dialer.Run(ctx)
 	}()
+	go c.watchProcessExit()
 
 	if err := c.initialize(ctx); err != nil {
 		return err
@@ -122,6 +123,26 @@ func (c *Client) Start(ctx context.Context) error {
 }
 
 // Stop gracefully shuts down the subprocess and held connection.
+
+func (c *Client) watchProcessExit() {
+	if c.proc == nil {
+		return
+	}
+	done := c.proc.Done()
+	if done == nil {
+		return
+	}
+	<-done
+	if c.dialer != nil {
+		_ = c.dialer.Close()
+	}
+	c.turnMu.Lock()
+	c.activeTurnIDs = make(map[string]struct{})
+	c.turnMu.Unlock()
+	c.turnInProgress.Store(false)
+	c.emit(Event{Kind: EventProcessExit, ThreadID: c.ActiveThreadID()})
+}
+
 func (c *Client) Stop(ctx context.Context) error {
 	if c.dialer != nil {
 		_ = c.dialer.Close()

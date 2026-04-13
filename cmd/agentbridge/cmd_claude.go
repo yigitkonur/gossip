@@ -37,7 +37,7 @@ func newClaudeCmd() *cobra.Command {
 		RunE: func(cmd *cobra.Command, args []string) error {
 			sd := statedir.New("")
 			_ = sd.Ensure()
-			lc := daemon.NewLifecycle(daemon.LifecycleOptions{StateDir: sd, ControlPort: 4502, Logger: logToStderr})
+			lc := daemon.NewLifecycle(daemon.LifecycleOptions{StateDir: sd, ControlPort: controlPort(), Logger: logToStderr})
 
 			ctx := cmd.Context()
 			ctx, cancel := context.WithCancel(ctx)

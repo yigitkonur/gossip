@@ -42,11 +42,14 @@ type Daemon struct {
 
 	statusBuf *filter.StatusBuffer
 
-	attachedMu        sync.Mutex
-	claudeAttached    bool
-	idleShutdownTimer *time.Timer
-	runCancel         context.CancelFunc
-	bridgeReadyAt     atomic.Int64
+	attachedMu               sync.Mutex
+	claudeAttached           bool
+	idleShutdownTimer        *time.Timer
+	claudeDisconnectTimer    *time.Timer
+	claudeOnlineNoticeSent   bool
+	claudeOfflineNoticeShown bool
+	runCancel                context.CancelFunc
+	bridgeReadyAt            atomic.Int64
 }
 
 // New constructs a Daemon from Options.
@@ -67,7 +70,19 @@ func New(opts Options) *Daemon {
 		opts.IdleShutdown = 30 * time.Second
 	}
 	d := &Daemon{opts: opts, filter: opts.FilterMode}
-	d.tuiState = tui.NewState(tui.Options{DisconnectGrace: 2500 * time.Millisecond, Logger: opts.Logger})
+	d.tuiState = tui.NewState(tui.Options{
+		DisconnectGrace: 2500 * time.Millisecond,
+		Logger:          opts.Logger,
+		OnDisconnectPersisted: func(id int64) {
+			d.control.Broadcast(context.Background(), protocol.BridgeMessage{ID: fmt.Sprintf("system_tui_disconnected_%d", time.Now().UnixMilli()), Source: protocol.SourceCodex, Content: fmt.Sprintf("⚠️ Codex TUI disconnected (conn #%d). Codex is still running in the background — reconnect the TUI to resume.", id), Timestamp: time.Now().UnixMilli()})
+		},
+		OnReconnectAfterNotice: func(id int64) {
+			d.control.Broadcast(context.Background(), protocol.BridgeMessage{ID: fmt.Sprintf("system_tui_reconnected_%d", time.Now().UnixMilli()), Source: protocol.SourceCodex, Content: fmt.Sprintf("✅ Codex TUI reconnected (conn #%d). Bridge restored, communication can continue.", id), Timestamp: time.Now().UnixMilli()})
+			if d.codex != nil {
+				_, _ = d.codex.InjectMessage(context.Background(), "✅ Claude Code is still online, bridge restored. Bidirectional communication can continue.")
+			}
+		},
+	})
 	return d
 }
 
@@ -83,6 +98,8 @@ func (d *Daemon) Run(ctx context.Context) error {
 	if err := d.codex.Start(runCtx); err != nil {
 		return fmt.Errorf("codex start: %w", err)
 	}
+	d.writeStatusFile()
+	defer d.removeStatusFile()
 
 	d.proxy.OnTUIConnected = func(id int64) {
 		d.tuiState.HandleTUIConnected(id)
@@ -174,6 +191,9 @@ func (d *Daemon) handleCodexEvent(ctx context.Context, ev codex.Event) {
 		if d.opts.Logger != nil && ev.Approval != nil {
 			d.opts.Logger("approval requested: " + ev.Approval.Method)
 		}
+	case codex.EventProcessExit:
+		d.tuiState.HandleCodexExit()
+		d.broadcastSystem(ctx, "system_codex_exit", "⚠️ Codex app-server exited. AgentBridge daemon is still running, but Codex needs to be restarted.")
 	}
 }
 
@@ -211,6 +231,42 @@ func (d *Daemon) cancelIdleShutdown() {
 	}
 }
 
+func (d *Daemon) scheduleClaudeDisconnectNotification() {
+	d.clearPendingClaudeDisconnect()
+	d.claudeDisconnectTimer = time.AfterFunc(5*time.Second, func() {
+		d.attachedMu.Lock()
+		attached := d.claudeAttached
+		d.attachedMu.Unlock()
+		if attached || !d.tuiState.CanReply() || !d.claudeOnlineNoticeSent || d.codex == nil {
+			return
+		}
+		_, _ = d.codex.InjectMessage(context.Background(), "⚠️ Claude Code went offline. AgentBridge is still running in the background; it will reconnect automatically when Claude reopens.")
+		d.claudeOnlineNoticeSent = false
+		d.claudeOfflineNoticeShown = true
+	})
+}
+
+func (d *Daemon) clearPendingClaudeDisconnect() {
+	if d.claudeDisconnectTimer != nil {
+		d.claudeDisconnectTimer.Stop()
+		d.claudeDisconnectTimer = nil
+	}
+}
+
+func (d *Daemon) writeStatusFile() {
+	if d.opts.StateDir == nil {
+		return
+	}
+	payload := fmt.Sprintf("{\n  \"proxyUrl\": \"ws://127.0.0.1:%d\",\n  \"appServerUrl\": \"ws://127.0.0.1:%d\",\n  \"controlPort\": %d,\n  \"pid\": %d\n}\n", d.opts.ProxyPort, d.opts.AppPort, d.opts.ControlPort, os.Getpid())
+	_ = os.WriteFile(d.opts.StateDir.StatusFile(), []byte(payload), 0o644)
+}
+
+func (d *Daemon) removeStatusFile() {
+	if d.opts.StateDir != nil {
+		_ = os.Remove(d.opts.StateDir.StatusFile())
+	}
+}
+
 func (d *Daemon) onStatusFlush(summary protocol.BridgeMessage) {
 	d.control.Broadcast(context.Background(), summary)
 }
@@ -225,8 +281,14 @@ func (d *Daemon) OnClaudeConnect() {
 	d.claudeAttached = true
 	d.attachedMu.Unlock()
 	d.cancelIdleShutdown()
+	d.clearPendingClaudeDisconnect()
 	if d.statusBuf != nil {
 		d.statusBuf.Flush("claude reconnected")
+	}
+	if d.tuiState.CanReply() && (!d.claudeOnlineNoticeSent || d.claudeOfflineNoticeShown) && d.codex != nil {
+		_, _ = d.codex.InjectMessage(context.Background(), "✅ Claude Code is online, bridge restored. Bidirectional communication can continue.")
+		d.claudeOnlineNoticeSent = true
+		d.claudeOfflineNoticeShown = false
 	}
 	if d.opts.Logger != nil {
 		d.opts.Logger("claude frontend attached")
@@ -239,6 +301,7 @@ func (d *Daemon) OnClaudeDisconnect(reason string) {
 	d.claudeAttached = false
 	d.attachedMu.Unlock()
 	d.scheduleIdleShutdown()
+	d.scheduleClaudeDisconnectNotification()
 	if d.opts.Logger != nil {
 		d.opts.Logger("claude frontend detached: " + reason)
 	}

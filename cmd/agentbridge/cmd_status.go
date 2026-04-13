@@ -18,7 +18,7 @@ func newStatusCmd() *cobra.Command {
 		Short: "Print current daemon status",
 		RunE: func(cmd *cobra.Command, args []string) error {
 			sd := statedir.New("")
-			lc := daemon.NewLifecycle(daemon.LifecycleOptions{StateDir: sd, ControlPort: 4502})
+			lc := daemon.NewLifecycle(daemon.LifecycleOptions{StateDir: sd, ControlPort: controlPort()})
 			ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 			defer cancel()
 			req, _ := http.NewRequestWithContext(ctx, http.MethodGet, lc.HealthURL(), nil)

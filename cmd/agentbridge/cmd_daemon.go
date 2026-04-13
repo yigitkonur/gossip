@@ -22,7 +22,7 @@ func newDaemonCmd() *cobra.Command {
 			sd := statedir.New("")
 			_ = sd.Ensure()
 			cfg := config.NewService("").LoadOrDefault()
-			lc := daemon.NewLifecycle(daemon.LifecycleOptions{StateDir: sd, ControlPort: 4502, Logger: logToStderr})
+			lc := daemon.NewLifecycle(daemon.LifecycleOptions{StateDir: sd, ControlPort: controlPort(), Logger: logToStderr})
 			if lc.WasKilled() {
 				return nil
 			}

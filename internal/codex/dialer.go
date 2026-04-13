@@ -70,6 +70,12 @@ func (d *Dialer) Run(ctx context.Context) error {
 		if ctx.Err() != nil {
 			return nil
 		}
+		d.mu.Lock()
+		closed := d.closed
+		d.mu.Unlock()
+		if closed {
+			return nil
+		}
 		if d.Conn() != nil {
 			d.waitDisconnect(ctx)
 			attempt = 0

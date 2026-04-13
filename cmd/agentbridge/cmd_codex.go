@@ -24,12 +24,15 @@ func newCodexCmd() *cobra.Command {
 				return err
 			}
 			cfg := config.NewService("").LoadOrDefault()
-			lc := daemon.NewLifecycle(daemon.LifecycleOptions{StateDir: sd, ControlPort: 4502, Logger: logToStderr})
+			lc := daemon.NewLifecycle(daemon.LifecycleOptions{StateDir: sd, ControlPort: controlPort(), Logger: logToStderr})
 			lc.ClearKilled()
 			if err := lc.EnsureRunning(cmd.Context()); err != nil {
 				return err
 			}
 			proxyURL := fmt.Sprintf("ws://127.0.0.1:%d", cfg.Daemon.ProxyPort)
+			if status, ok := readDaemonStatus(sd.StatusFile()); ok && status.ProxyURL != "" {
+				proxyURL = status.ProxyURL
+			}
 			if err := waitForProxyReady(cmd.Context(), proxyURL); err != nil {
 				return err
 			}

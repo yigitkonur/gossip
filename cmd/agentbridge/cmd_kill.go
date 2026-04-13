@@ -21,7 +21,7 @@ func newKillCmd() *cobra.Command {
 		RunE: func(cmd *cobra.Command, args []string) error {
 			sd := statedir.New("")
 			_ = sd.Ensure()
-			lc := daemon.NewLifecycle(daemon.LifecycleOptions{StateDir: sd, ControlPort: 4502})
+			lc := daemon.NewLifecycle(daemon.LifecycleOptions{StateDir: sd, ControlPort: controlPort()})
 			if err := lc.WriteKilled(); err != nil {
 				return err
 			}
