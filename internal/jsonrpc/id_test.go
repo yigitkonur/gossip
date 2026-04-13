@@ -15,6 +15,7 @@ func TestNormalizeID(t *testing.T) {
 		{"int", `42`, "42", true},
 		{"negative-int", `-5`, "-5", true},
 		{"float", `42.0`, "42", true},
+		{"non-integer-float", `42.5`, "", false},
 		{"string", `"abc"`, "abc", true},
 		{"empty-string", `""`, "", true},
 		{"null", `null`, "", false},

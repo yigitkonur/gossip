@@ -63,10 +63,17 @@ type ItemCompletedParams struct {
 	Item     Item   `json:"item"`
 }
 
+// ItemContent is one content fragment inside an item.
+type ItemContent struct {
+	Type string `json:"type"`
+	Text string `json:"text,omitempty"`
+}
+
 // Item is a generic content item with raw variant content available on demand.
 type Item struct {
 	ID         string          `json:"id"`
 	Type       string          `json:"type"`
+	Content    []ItemContent   `json:"content,omitempty"`
 	RawContent json.RawMessage `json:"-"`
 }
 

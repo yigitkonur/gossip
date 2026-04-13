@@ -25,6 +25,9 @@ func NormalizeID(raw json.RawMessage) (string, bool) {
 		return strconv.FormatInt(i, 10), true
 	}
 	if f, err := strconv.ParseFloat(trimmed, 64); err == nil {
+		if f != float64(int64(f)) {
+			return "", false
+		}
 		return strconv.FormatInt(int64(f), 10), true
 	}
 	return "", false

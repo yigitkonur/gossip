@@ -36,6 +36,8 @@ type Client struct {
 
 	agentMessageMu   sync.Mutex
 	agentMessageBufs map[string]*strings.Builder
+	turnMu           sync.Mutex
+	activeTurnIDs    map[string]struct{}
 
 	events chan Event
 }
@@ -49,6 +51,7 @@ func NewClient(opts ClientOptions) *Client {
 		opts:             opts,
 		events:           make(chan Event, 64),
 		agentMessageBufs: make(map[string]*strings.Builder),
+		activeTurnIDs:    make(map[string]struct{}),
 	}
 	c.threadID.Store("")
 	return c
@@ -202,12 +205,31 @@ func (c *Client) consumeNotifications(ctx context.Context) {
 func (c *Client) dispatchNotification(n jsonrpc.Notification) {
 	switch n.Method {
 	case protocol.MethodTurnStarted:
-		c.turnInProgress.Store(true)
-		c.emit(Event{Kind: EventTurnStarted, ThreadID: c.ActiveThreadID()})
+		var p protocol.TurnStartedParams
+		if err := json.Unmarshal(n.Params, &p); err != nil {
+			return
+		}
+		c.markTurnStarted(p.TurnID)
+		threadID := p.ThreadID
+		if threadID == "" {
+			threadID = c.ActiveThreadID()
+		}
+		c.emit(Event{Kind: EventTurnStarted, ThreadID: threadID, TurnID: p.TurnID})
 	case protocol.MethodTurnCompleted:
-		c.turnInProgress.Store(false)
-		c.flushPendingAgentMessages()
-		c.emit(Event{Kind: EventTurnCompleted, ThreadID: c.ActiveThreadID()})
+		var p protocol.TurnCompletedParams
+		if err := json.Unmarshal(n.Params, &p); err != nil {
+			return
+		}
+		wasInProgress := c.TurnInProgress()
+		c.markTurnCompleted(p.TurnID)
+		if wasInProgress && !c.TurnInProgress() {
+			c.flushPendingAgentMessages()
+			threadID := p.ThreadID
+			if threadID == "" {
+				threadID = c.ActiveThreadID()
+			}
+			c.emit(Event{Kind: EventTurnCompleted, ThreadID: threadID, TurnID: p.TurnID})
+		}
 	case protocol.MethodItemAgentMessageDelta:
 		var p protocol.AgentMessageDeltaParams
 		if err := json.Unmarshal(n.Params, &p); err != nil {
@@ -236,6 +258,9 @@ func (c *Client) appendDelta(p protocol.AgentMessageDeltaParams) {
 }
 
 func (c *Client) finalizeItem(p protocol.ItemCompletedParams) {
+	if p.Item.Type != "" && p.Item.Type != "agentMessage" {
+		return
+	}
 	key := p.TurnID + "_" + p.Item.ID
 	c.agentMessageMu.Lock()
 	buf, ok := c.agentMessageBufs[key]
@@ -243,10 +268,16 @@ func (c *Client) finalizeItem(p protocol.ItemCompletedParams) {
 		delete(c.agentMessageBufs, key)
 	}
 	c.agentMessageMu.Unlock()
-	if !ok || buf.Len() == 0 {
+	text := ""
+	if ok && buf.Len() > 0 {
+		text = buf.String()
+	} else {
+		text = extractItemContent(p.Item)
+	}
+	if text == "" {
 		return
 	}
-	c.emit(Event{Kind: EventAgentMessage, ThreadID: p.ThreadID, TurnID: p.TurnID, Text: buf.String()})
+	c.emit(Event{Kind: EventAgentMessage, ThreadID: p.ThreadID, TurnID: p.TurnID, Text: text})
 }
 
 func (c *Client) flushPendingAgentMessages() {
@@ -276,7 +307,7 @@ func (c *Client) consumeServerRequests(ctx context.Context) {
 			if !ok {
 				return
 			}
-			if c.proxy != nil && c.proxy.ConnectionCount() > 0 {
+			if c.proxy != nil {
 				c.emit(Event{Kind: EventApprovalRequest, Approval: &ApprovalRequest{ID: req.ID, Method: req.Method, Params: req.Params}})
 				continue
 			}
@@ -284,6 +315,42 @@ func (c *Client) consumeServerRequests(ctx context.Context) {
 			c.emit(Event{Kind: EventApprovalRequest, Approval: &ApprovalRequest{ID: req.ID, Method: req.Method, Params: req.Params}})
 		}
 	}
+}
+
+func extractItemContent(item protocol.Item) string {
+	if len(item.Content) == 0 {
+		return ""
+	}
+	var parts []string
+	for _, content := range item.Content {
+		if content.Type == "text" && content.Text != "" {
+			parts = append(parts, content.Text)
+		}
+	}
+	return strings.Join(parts, "")
+}
+
+func (c *Client) markTurnStarted(turnID string) {
+	c.turnMu.Lock()
+	defer c.turnMu.Unlock()
+	if turnID == "" {
+		turnID = fmt.Sprintf("unknown:%d", time.Now().UnixNano())
+	}
+	c.activeTurnIDs[turnID] = struct{}{}
+	c.turnInProgress.Store(len(c.activeTurnIDs) > 0)
+}
+
+func (c *Client) markTurnCompleted(turnID string) {
+	c.turnMu.Lock()
+	defer c.turnMu.Unlock()
+	if turnID == "" {
+		for id := range c.activeTurnIDs {
+			delete(c.activeTurnIDs, id)
+		}
+	} else {
+		delete(c.activeTurnIDs, turnID)
+	}
+	c.turnInProgress.Store(len(c.activeTurnIDs) > 0)
 }
 
 func (c *Client) emit(e Event) {

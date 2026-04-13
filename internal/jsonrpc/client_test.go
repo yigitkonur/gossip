@@ -95,3 +95,31 @@ func TestClient_ServerRequest_RoundTrip(t *testing.T) {
 		t.Errorf("response result = %s", env.Result)
 	}
 }
+
+func TestClient_Call_UsesNegativeIDs(t *testing.T) {
+	lb := newLoopback()
+	c := NewClient(lb)
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+
+	done := make(chan error, 1)
+	go func() {
+		_, err := c.Call(ctx, "thread/start", map[string]any{"cwd": "/tmp"})
+		done <- err
+	}()
+
+	sent := <-lb.ch
+	var env protocol.Envelope
+	if err := json.Unmarshal(sent, &env); err != nil {
+		t.Fatalf("unmarshal sent: %v", err)
+	}
+	if string(env.ID) != "-1" {
+		t.Fatalf("request id = %s, want -1", env.ID)
+	}
+	reply := append([]byte(`{"jsonrpc":"2.0","id":`), env.ID...)
+	reply = append(reply, []byte(`,"result":{"thread":{"id":"t1"}}}`)...)
+	c.HandleIncoming(reply)
+	if err := <-done; err != nil {
+		t.Fatalf("Call returned error: %v", err)
+	}
+}

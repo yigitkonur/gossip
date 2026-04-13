@@ -55,7 +55,7 @@ func (c *Client) ServerRequests() <-chan ServerRequest { return c.serverRequests
 
 // Call sends a client→server request and waits for its response.
 func (c *Client) Call(ctx context.Context, method string, params any) (json.RawMessage, error) {
-	id := c.nextID.Add(1)
+	id := c.nextID.Add(-1)
 	key := idKey(id)
 	respCh := make(chan *protocol.Envelope, 1)
 
