@@ -78,11 +78,12 @@ func (d *Daemon) Run(ctx context.Context) error {
 	defer runCancel()
 
 	d.codex = codex.NewClient(codex.ClientOptions{Port: d.opts.AppPort, Logger: d.opts.Logger})
+	d.proxy = codex.NewProxy(d.codex)
+	d.codex.AttachProxy(d.proxy)
 	if err := d.codex.Start(runCtx); err != nil {
 		return fmt.Errorf("codex start: %w", err)
 	}
 
-	d.proxy = codex.NewProxy(d.codex)
 	d.proxy.OnTUIConnected = func(id int64) {
 		d.tuiState.HandleTUIConnected(id)
 		d.cancelIdleShutdown()
@@ -97,7 +98,6 @@ func (d *Daemon) Run(ctx context.Context) error {
 			d.opts.Logger(fmt.Sprintf("TUI conn #%d disconnected", id))
 		}
 	}
-	d.codex.AttachProxy(d.proxy)
 
 	d.control = control.NewServer(d)
 	d.statusBuf = filter.NewStatusBuffer(d.onStatusFlush, filter.StatusBufferOptions{})
@@ -225,6 +225,9 @@ func (d *Daemon) OnClaudeConnect() {
 	d.claudeAttached = true
 	d.attachedMu.Unlock()
 	d.cancelIdleShutdown()
+	if d.statusBuf != nil {
+		d.statusBuf.Flush("claude reconnected")
+	}
 	if d.opts.Logger != nil {
 		d.opts.Logger("claude frontend attached")
 	}

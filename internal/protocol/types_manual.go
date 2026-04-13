@@ -17,6 +17,11 @@ type Thread struct {
 	ID string `json:"id"`
 }
 
+// Turn is the minimal turn identity shape AgentBridge tracks.
+type Turn struct {
+	ID string `json:"id"`
+}
+
 // TurnStartParams is the turn/start request payload.
 type TurnStartParams struct {
 	ThreadID string      `json:"threadId"`
@@ -32,13 +37,15 @@ type UserInput struct {
 // TurnStartedParams is the turn/started notification payload.
 type TurnStartedParams struct {
 	ThreadID string `json:"threadId"`
-	TurnID   string `json:"turnId"`
+	TurnID   string `json:"turnId,omitempty"`
+	Turn     Turn   `json:"turn"`
 }
 
 // TurnCompletedParams is the turn/completed notification payload.
 type TurnCompletedParams struct {
 	ThreadID string `json:"threadId"`
-	TurnID   string `json:"turnId"`
+	TurnID   string `json:"turnId,omitempty"`
+	Turn     Turn   `json:"turn"`
 }
 
 // AgentMessageDeltaParams is the item/agentMessage/delta notification payload.
@@ -73,6 +80,7 @@ type ItemContent struct {
 type Item struct {
 	ID         string          `json:"id"`
 	Type       string          `json:"type"`
+	Text       string          `json:"text,omitempty"`
 	Content    []ItemContent   `json:"content,omitempty"`
 	RawContent json.RawMessage `json:"-"`
 }

@@ -4,6 +4,7 @@ import (
 	"context"
 	"os/signal"
 	"syscall"
+	"time"
 
 	"github.com/raysonmeng/agent-bridge/internal/config"
 	"github.com/raysonmeng/agent-bridge/internal/daemon"
@@ -32,12 +33,13 @@ func newDaemonCmd() *cobra.Command {
 			defer stop()
 
 			d := daemon.New(daemon.Options{
-				StateDir:    sd,
-				AppPort:     cfg.Daemon.Port,
-				ProxyPort:   cfg.Daemon.ProxyPort,
-				ControlPort: 4502,
-				FilterMode:  filter.ModeFiltered,
-				Logger:      logToStderr,
+				StateDir:     sd,
+				AppPort:      cfg.Daemon.Port,
+				ProxyPort:    cfg.Daemon.ProxyPort,
+				ControlPort:  4502,
+				FilterMode:   filter.ModeFiltered,
+				Logger:       logToStderr,
+				IdleShutdown: time.Duration(cfg.IdleShutdownSeconds) * time.Second,
 			})
 			return d.Run(ctx)
 		},

@@ -3,6 +3,7 @@ package main
 import (
 	"fmt"
 	"os"
+	"os/exec"
 	"strconv"
 	"strings"
 	"syscall"
@@ -19,12 +20,13 @@ func newKillCmd() *cobra.Command {
 		Short: "Stop the AgentBridge daemon and write the killed sentinel",
 		RunE: func(cmd *cobra.Command, args []string) error {
 			sd := statedir.New("")
+			_ = sd.Ensure()
 			lc := daemon.NewLifecycle(daemon.LifecycleOptions{StateDir: sd, ControlPort: 4502})
 			if err := lc.WriteKilled(); err != nil {
 				return err
 			}
 			if b, err := os.ReadFile(sd.TuiPidFile()); err == nil {
-				if pid, err := strconv.Atoi(strings.TrimSpace(string(b))); err == nil && daemon.IsProcessAlive(pid) {
+				if pid, err := strconv.Atoi(strings.TrimSpace(string(b))); err == nil && daemon.IsProcessAlive(pid) && isManagedCodexProcess(pid) {
 					_ = syscall.Kill(pid, syscall.SIGTERM)
 				}
 				_ = os.Remove(sd.TuiPidFile())
@@ -41,4 +43,13 @@ func newKillCmd() *cobra.Command {
 			return nil
 		},
 	}
+}
+
+func isManagedCodexProcess(pid int) bool {
+	out, err := exec.Command("ps", "-p", strconv.Itoa(pid), "-o", "command=").Output()
+	if err != nil {
+		return false
+	}
+	cmd := strings.TrimSpace(string(out))
+	return strings.Contains(cmd, "codex") && strings.Contains(cmd, "tui_app_server")
 }

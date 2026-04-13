@@ -45,6 +45,7 @@ func newClaudeCmd() *cobra.Command {
 
 			var srv *mcp.Server
 			var bridgeDisabled atomic.Bool
+			var reconnectRunning atomic.Bool
 			pushSystem := func(id, content string) {
 				if srv == nil {
 					return
@@ -52,7 +53,8 @@ func newClaudeCmd() *cobra.Command {
 				srv.PushMessage(protocol.BridgeMessage{ID: fmt.Sprintf("%s_%d", id, time.Now().UnixMilli()), Source: protocol.SourceCodex, Content: content, Timestamp: time.Now().UnixMilli()})
 			}
 
-			cc := control.NewClient(control.ClientOptions{
+			var cc *control.Client
+			cc = control.NewClient(control.ClientOptions{
 				URL: lc.ControlWsURL(),
 				OnCodexMsg: func(msg protocol.BridgeMessage) {
 					if srv != nil {
@@ -65,7 +67,7 @@ func newClaudeCmd() *cobra.Command {
 						pushSystem("system_bridge_disabled", "⛔ AgentBridge was stopped by agentbridge kill. Bridge is staying idle until you restart with agentbridge codex.")
 					}
 				},
-				ShouldReconnect: func() bool { return !bridgeDisabled.Load() },
+				ShouldReconnect: func() bool { return !bridgeDisabled.Load() && !lc.WasKilled() },
 				Logger:          logToStderr,
 			})
 
@@ -82,6 +84,31 @@ func newClaudeCmd() *cobra.Command {
 				},
 			})
 
+			go func() {
+				ticker := time.NewTicker(5 * time.Second)
+				defer ticker.Stop()
+				for {
+					select {
+					case <-ctx.Done():
+						return
+					case <-ticker.C:
+						if lc.WasKilled() || !bridgeDisabled.Load() || reconnectRunning.Load() {
+							continue
+						}
+						recoveryCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
+						healthy := lc.IsHealthy(recoveryCtx)
+						cancel()
+						if !healthy {
+							continue
+						}
+						bridgeDisabled.Store(false)
+						pushSystem("system_bridge_recovered", "✅ AgentBridge daemon reconnected after the killed sentinel was cleared.")
+						reconnectRunning.Store(true)
+						go func() { defer reconnectRunning.Store(false); _ = cc.RunWithReconnect(ctx) }()
+					}
+				}
+			}()
+
 			if lc.WasKilled() {
 				bridgeDisabled.Store(true)
 				go func() {
@@ -96,7 +123,8 @@ func newClaudeCmd() *cobra.Command {
 			if err := lc.EnsureRunning(startCtx); err != nil {
 				return err
 			}
-			go cc.RunWithReconnect(ctx)
+			reconnectRunning.Store(true)
+			go func() { defer reconnectRunning.Store(false); _ = cc.RunWithReconnect(ctx) }()
 
 			return srv.Serve(ctx, os.Stdin, os.Stdout)
 		},

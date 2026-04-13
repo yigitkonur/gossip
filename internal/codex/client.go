@@ -209,26 +209,34 @@ func (c *Client) dispatchNotification(n jsonrpc.Notification) {
 		if err := json.Unmarshal(n.Params, &p); err != nil {
 			return
 		}
-		c.markTurnStarted(p.TurnID)
+		turnID := p.Turn.ID
+		if turnID == "" {
+			turnID = p.TurnID
+		}
+		c.markTurnStarted(turnID)
 		threadID := p.ThreadID
 		if threadID == "" {
 			threadID = c.ActiveThreadID()
 		}
-		c.emit(Event{Kind: EventTurnStarted, ThreadID: threadID, TurnID: p.TurnID})
+		c.emit(Event{Kind: EventTurnStarted, ThreadID: threadID, TurnID: turnID})
 	case protocol.MethodTurnCompleted:
 		var p protocol.TurnCompletedParams
 		if err := json.Unmarshal(n.Params, &p); err != nil {
 			return
 		}
+		turnID := p.Turn.ID
+		if turnID == "" {
+			turnID = p.TurnID
+		}
 		wasInProgress := c.TurnInProgress()
-		c.markTurnCompleted(p.TurnID)
+		c.markTurnCompleted(turnID)
 		if wasInProgress && !c.TurnInProgress() {
 			c.flushPendingAgentMessages()
 			threadID := p.ThreadID
 			if threadID == "" {
 				threadID = c.ActiveThreadID()
 			}
-			c.emit(Event{Kind: EventTurnCompleted, ThreadID: threadID, TurnID: p.TurnID})
+			c.emit(Event{Kind: EventTurnCompleted, ThreadID: threadID, TurnID: turnID})
 		}
 	case protocol.MethodItemAgentMessageDelta:
 		var p protocol.AgentMessageDeltaParams
@@ -318,6 +326,9 @@ func (c *Client) consumeServerRequests(ctx context.Context) {
 }
 
 func extractItemContent(item protocol.Item) string {
+	if item.Text != "" {
+		return item.Text
+	}
 	if len(item.Content) == 0 {
 		return ""
 	}
