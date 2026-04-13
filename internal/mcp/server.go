@@ -55,6 +55,8 @@ type Server struct {
 
 	notificationSeq atomic.Int64
 
+	cancelServe context.CancelCauseFunc
+
 	closed chan struct{}
 }
 
@@ -85,6 +87,10 @@ func (s *Server) Ready() <-chan struct{} { return s.ready }
 
 // Serve reads line-delimited JSON requests from r and writes responses and notifications to w.
 func (s *Server) Serve(ctx context.Context, r io.ReadCloser, w io.WriteCloser) error {
+	serveCtx, cancel := context.WithCancelCause(ctx)
+	s.cancelServe = cancel
+	defer cancel(nil)
+
 	buffered := s.bindWriter(w)
 	defer close(s.closed)
 	for _, msg := range buffered {
@@ -102,12 +108,17 @@ func (s *Server) Serve(ctx context.Context, r io.ReadCloser, w io.WriteCloser) e
 			if len(line) == 0 {
 				continue
 			}
-			s.handleRequest(ctx, line)
+			s.handleRequest(serveCtx, line)
 		}
 	}()
 	select {
-	case <-ctx.Done():
-		return ctx.Err()
+	case <-serveCtx.Done():
+		// Close the reader to unblock scanner.Scan() in the goroutine above.
+		// Per Go stdlib, closing the read end of a pipe causes Scan() to
+		// return false, which closes the done channel.
+		r.Close()
+		<-done // wait for scanner goroutine to exit cleanly
+		return context.Cause(serveCtx)
 	case <-done:
 		return scanner.Err()
 	}
@@ -164,8 +175,16 @@ func (s *Server) write(v any) {
 	if s.writer == nil {
 		return
 	}
-	_, _ = s.writer.Write(payload)
-	_, _ = s.writer.Write([]byte{'\n'})
+	// Single write with appended newline — atomic at the OS level for
+	// payloads under PIPE_BUF (4KB on POSIX), and correct under writeMu
+	// for larger payloads.
+	buf := append(payload, '\n')
+	if _, err := s.writer.Write(buf); err != nil {
+		s.log("write to stdout: " + err.Error())
+		if s.cancelServe != nil {
+			s.cancelServe(fmt.Errorf("write to stdout: %w", err))
+		}
+	}
 }
 
 func (s *Server) bindWriter(w io.Writer) []protocol.BridgeMessage {
