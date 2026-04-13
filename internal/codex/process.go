@@ -83,11 +83,14 @@ func (p *Process) Start(ctx context.Context) error {
 	p.cmd = cmd
 	p.done = make(chan struct{})
 
-	go p.pumpLines("stdout", stdout)
-	go p.pumpLines("stderr", stderr)
+	var wg sync.WaitGroup
+	wg.Add(2)
+	go func() { defer wg.Done(); p.pumpLines("stdout", stdout) }()
+	go func() { defer wg.Done(); p.pumpLines("stderr", stderr) }()
 	go func() {
-		_ = cmd.Wait()
-		close(p.done)
+		wg.Wait()      // drain all pipe output first
+		_ = cmd.Wait() // then reap the process
+		close(p.done)  // then signal exit
 	}()
 
 	return p.waitForHealthy(ctx)

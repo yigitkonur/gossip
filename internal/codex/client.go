@@ -164,15 +164,22 @@ func (c *Client) InjectMessage(ctx context.Context, text string) (bool, string) 
 	if threadID == "" {
 		return false, "no active thread"
 	}
-	if c.turnInProgress.Load() {
+	if !c.turnInProgress.CompareAndSwap(false, true) {
 		return false, "codex turn already in progress"
 	}
+	// NOTE: We do NOT defer Store(false) here. The turn lifecycle is managed
+	// by handleNotification (lines ~378, ~391) which sets turnInProgress based
+	// on activeTurnIDs. CAS only gates concurrent InjectMessage callers —
+	// once the server acknowledges the turn, the normal lifecycle takes over.
 	params := protocol.TurnStartParams{
 		ThreadID: threadID,
 		Input:    []protocol.UserInput{{Type: "text", Text: text}},
 	}
 	_, err := c.rpc.Call(ctx, protocol.MethodTurnStart, params)
 	if err != nil {
+		// RPC failed — the turn was never started server-side.
+		// Reset the flag so the next InjectMessage can proceed.
+		c.turnInProgress.Store(false)
 		return false, err.Error()
 	}
 	return true, ""
