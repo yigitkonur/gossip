@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"strings"
 	"time"
 
 	"github.com/coder/websocket"
@@ -14,11 +15,25 @@ import (
 	"github.com/spf13/cobra"
 )
 
+type codexArgsResult struct {
+	Args     []string
+	ShowHelp bool
+}
+
 func newCodexCmd() *cobra.Command {
 	return &cobra.Command{
-		Use:   "codex",
-		Short: "Ensure the daemon is running, then launch Codex TUI connected to the proxy",
+		Use:                "codex",
+		Short:              "Ensure the daemon is running, then launch Codex TUI connected to the proxy",
+		DisableFlagParsing: true,
 		RunE: func(cmd *cobra.Command, args []string) error {
+			normalized, err := normalizeCodexArgs(args)
+			if err != nil {
+				return err
+			}
+			if normalized.ShowHelp {
+				return cmd.Help()
+			}
+
 			sd := statedir.New("")
 			if err := sd.Ensure(); err != nil {
 				return err
@@ -37,8 +52,8 @@ func newCodexCmd() *cobra.Command {
 				return err
 			}
 			fmt.Println("daemon ready. launching codex TUI with --remote", proxyURL)
-			args = append([]string{"--enable", "tui_app_server", "--remote", proxyURL}, filterCodexArgs(args)...)
-			tui := exec.Command("codex", args...)
+			codexArgs := append([]string{"--enable", "tui_app_server", "--remote", proxyURL}, normalized.Args...)
+			tui := exec.Command("codex", codexArgs...)
 			tui.Stdin = os.Stdin
 			tui.Stdout = os.Stdout
 			tui.Stderr = os.Stderr
@@ -46,7 +61,7 @@ func newCodexCmd() *cobra.Command {
 				return err
 			}
 			_ = os.WriteFile(sd.TuiPidFile(), []byte(fmt.Sprintf("%d\n", tui.Process.Pid)), 0o644)
-			err := tui.Wait()
+			err = tui.Wait()
 			_ = os.Remove(sd.TuiPidFile())
 			return err
 		},
@@ -76,24 +91,37 @@ func waitForProxyReady(ctx context.Context, proxyURL string) error {
 
 func logToStderr(msg string) { fmt.Fprintln(os.Stderr, msg) }
 
-func filterCodexArgs(args []string) []string {
-	filtered := make([]string, 0, len(args))
-	skipNext := false
-	for i, arg := range args {
-		if skipNext {
-			skipNext = false
-			continue
-		}
-		switch arg {
-		case "--remote", "--enable":
-			skipNext = true
-			continue
-		case "tui_app_server":
-			if i > 0 && args[i-1] == "--enable" {
-				continue
-			}
-		}
-		filtered = append(filtered, arg)
+func normalizeCodexArgs(args []string) (codexArgsResult, error) {
+	if len(args) > 0 && args[0] == "--" {
+		args = args[1:]
+		return codexArgsResult{Args: append([]string(nil), args...)}, nil
 	}
-	return filtered
+	if len(args) == 1 && (args[0] == "--help" || args[0] == "-h") {
+		return codexArgsResult{ShowHelp: true}, nil
+	}
+
+	filtered := make([]string, 0, len(args))
+	for i := 0; i < len(args); i++ {
+		arg := args[i]
+		switch {
+		case arg == "--remote":
+			return codexArgsResult{}, ownedCodexFlagError(`"--remote" is automatically set by agentbridge codex.`)
+		case strings.HasPrefix(arg, "--remote="):
+			return codexArgsResult{}, ownedCodexFlagError(`"--remote" is automatically set by agentbridge codex.`)
+		case arg == "--enable":
+			if i+1 < len(args) && args[i+1] == "tui_app_server" {
+				return codexArgsResult{}, ownedCodexFlagError(`"--enable tui_app_server" is automatically set by agentbridge codex.`)
+			}
+			filtered = append(filtered, arg)
+		case arg == "--enable=tui_app_server":
+			return codexArgsResult{}, ownedCodexFlagError(`"--enable=tui_app_server" is automatically set by agentbridge codex.`)
+		default:
+			filtered = append(filtered, arg)
+		}
+	}
+	return codexArgsResult{Args: filtered}, nil
+}
+
+func ownedCodexFlagError(msg string) error {
+	return fmt.Errorf("%s\n\nIf you need full control over these flags, use the native command directly:\n  codex [your flags here]", msg)
 }

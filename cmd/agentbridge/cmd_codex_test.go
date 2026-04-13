@@ -2,13 +2,89 @@ package main
 
 import (
 	"reflect"
+	"strings"
 	"testing"
 )
 
-func TestFilterCodexArgs_StripsOwnedFlags(t *testing.T) {
-	got := filterCodexArgs([]string{"--model", "gpt-5", "--remote", "ws://x", "--enable", "tui_app_server", "--sandbox", "workspace-write"})
+func TestNewCodexCmd_DisablesFlagParsing(t *testing.T) {
+	cmd := newCodexCmd()
+	if !cmd.DisableFlagParsing {
+		t.Fatal("codex command should disable Cobra flag parsing so native Codex flags pass through")
+	}
+}
+
+func TestNormalizeCodexArgs_StripsOwnedFlags(t *testing.T) {
+	got, err := normalizeCodexArgs([]string{"--model", "gpt-5", "--sandbox", "workspace-write"})
+	if err != nil {
+		t.Fatalf("normalizeCodexArgs returned error: %v", err)
+	}
+	if got.ShowHelp {
+		t.Fatal("ShowHelp should be false")
+	}
 	want := []string{"--model", "gpt-5", "--sandbox", "workspace-write"}
-	if !reflect.DeepEqual(got, want) {
-		t.Fatalf("got %#v want %#v", got, want)
+	if !reflect.DeepEqual(got.Args, want) {
+		t.Fatalf("got %#v want %#v", got.Args, want)
+	}
+}
+
+func TestNormalizeCodexArgs_StripsLeadingSeparator(t *testing.T) {
+	got, err := normalizeCodexArgs([]string{"--", "--model", "gpt-5"})
+	if err != nil {
+		t.Fatalf("normalizeCodexArgs returned error: %v", err)
+	}
+	want := []string{"--model", "gpt-5"}
+	if !reflect.DeepEqual(got.Args, want) {
+		t.Fatalf("got %#v want %#v", got.Args, want)
+	}
+}
+
+func TestNormalizeCodexArgs_RejectsOwnedFlags(t *testing.T) {
+	tests := []struct {
+		name string
+		args []string
+		want string
+	}{
+		{name: "remote split", args: []string{"--remote", "ws://127.0.0.1:7777"}, want: `"--remote" is automatically set by agentbridge codex`},
+		{name: "remote equals", args: []string{"--remote=ws://127.0.0.1:7777"}, want: `"--remote" is automatically set by agentbridge codex`},
+		{name: "owned enable split", args: []string{"--enable", "tui_app_server"}, want: `"--enable tui_app_server" is automatically set by agentbridge codex`},
+		{name: "owned enable equals", args: []string{"--enable=tui_app_server"}, want: `"--enable=tui_app_server" is automatically set by agentbridge codex`},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			_, err := normalizeCodexArgs(tt.args)
+			if err == nil {
+				t.Fatal("expected error")
+			}
+			if !strings.Contains(err.Error(), tt.want) {
+				t.Fatalf("error %q does not contain %q", err.Error(), tt.want)
+			}
+		})
+	}
+}
+
+func TestNormalizeCodexArgs_PreservesOtherEnableFlags(t *testing.T) {
+	got, err := normalizeCodexArgs([]string{"--enable", "other_feature", "--model", "o3"})
+	if err != nil {
+		t.Fatalf("normalizeCodexArgs returned error: %v", err)
+	}
+	want := []string{"--enable", "other_feature", "--model", "o3"}
+	if !reflect.DeepEqual(got.Args, want) {
+		t.Fatalf("got %#v want %#v", got.Args, want)
+	}
+}
+
+func TestNormalizeCodexArgs_ReportsHelp(t *testing.T) {
+	for _, args := range [][]string{{"--help"}, {"-h"}} {
+		got, err := normalizeCodexArgs(args)
+		if err != nil {
+			t.Fatalf("normalizeCodexArgs returned error: %v", err)
+		}
+		if !got.ShowHelp {
+			t.Fatalf("ShowHelp should be true for %v", args)
+		}
+		if len(got.Args) != 0 {
+			t.Fatalf("Args should be empty for help, got %#v", got.Args)
+		}
 	}
 }
