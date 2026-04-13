@@ -70,6 +70,11 @@ func (d *Dialer) Run(ctx context.Context) error {
 		if ctx.Err() != nil {
 			return nil
 		}
+		if d.Conn() != nil {
+			d.waitDisconnect(ctx)
+			attempt = 0
+			continue
+		}
 		err := d.ConnectOnce(ctx)
 		if err == nil {
 			d.waitDisconnect(ctx)
