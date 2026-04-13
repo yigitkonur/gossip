@@ -9,9 +9,51 @@ import { spawn, execSync } from "child_process";
 import { createInterface } from "readline";
 import { EventEmitter } from "events";
 import { appendFileSync } from "fs";
-var LOG_FILE = "/tmp/agentbridge.log";
-var TRACKED_REQUEST_METHODS = new Set(["thread/start", "thread/resume", "turn/start"]);
 
+// src/app-server-protocol.ts
+var APP_SERVER_TRACKED_REQUEST_METHODS = [
+  "thread/start",
+  "thread/resume",
+  "turn/start"
+];
+var APP_SERVER_SERVER_REQUEST_METHODS = [
+  "item/permissions/requestApproval",
+  "item/fileChange/requestApproval",
+  "item/commandExecution/requestApproval"
+];
+var APP_SERVER_NOTIFICATION_METHODS = [
+  "turn/started",
+  "turn/completed",
+  "item/started",
+  "item/agentMessage/delta",
+  "item/completed"
+];
+var TRACKED_REQUEST_METHOD_SET = new Set(APP_SERVER_TRACKED_REQUEST_METHODS);
+var SERVER_REQUEST_METHOD_SET = new Set(APP_SERVER_SERVER_REQUEST_METHODS);
+var NOTIFICATION_METHOD_SET = new Set(APP_SERVER_NOTIFICATION_METHODS);
+function isObjectRecord(value) {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+function isTrackedAppServerRequestMethod(method) {
+  return typeof method === "string" && TRACKED_REQUEST_METHOD_SET.has(method);
+}
+function isAppServerRequestMessage(value) {
+  if (!isObjectRecord(value))
+    return false;
+  return (typeof value.id === "number" || typeof value.id === "string") && typeof value.method === "string";
+}
+function isAppServerNotification(value) {
+  if (!isObjectRecord(value))
+    return false;
+  return value.id === undefined && typeof value.method === "string" && NOTIFICATION_METHOD_SET.has(value.method);
+}
+function isAppServerResponseMessage(value) {
+  if (!isObjectRecord(value))
+    return false;
+  return (typeof value.id === "number" || typeof value.id === "string") && value.method === undefined && (("result" in value) || ("error" in value));
+}
+
+// src/codex-adapter.ts
 class CodexAdapter extends EventEmitter {
   static RESPONSE_TRACKING_TTL_MS = 30000;
   proc = null;
@@ -29,13 +71,27 @@ class CodexAdapter extends EventEmitter {
   turnInProgress = false;
   nextProxyId = 1e5;
   upstreamToClient = new Map;
+  serverRequestToProxy = new Map;
+  serverRequestTtlTimers = new Map;
+  pendingServerRequests = [];
   staleProxyIds = new Map;
   bridgeRequestIds = new Map;
   intentionalDisconnect = false;
-  constructor(appPort = 4500, proxyPort = 4501) {
+  logFilePath;
+  verbose;
+  constructor(appPortOrOpts = 4500, proxyPort = 4501) {
     super();
-    this.appPort = appPort;
-    this.proxyPort = proxyPort;
+    if (typeof appPortOrOpts === "object") {
+      this.appPort = appPortOrOpts.appPort ?? 4500;
+      this.proxyPort = appPortOrOpts.proxyPort ?? 4501;
+      this.logFilePath = appPortOrOpts.logFile ?? "/tmp/agentbridge.log";
+      this.verbose = appPortOrOpts.verbose ?? false;
+    } else {
+      this.appPort = appPortOrOpts;
+      this.proxyPort = proxyPort;
+      this.logFilePath = "/tmp/agentbridge.log";
+      this.verbose = false;
+    }
   }
   get appServerUrl() {
     return `ws://127.0.0.1:${this.appPort}`;
@@ -134,8 +190,10 @@ class CodexAdapter extends EventEmitter {
   connectToAppServer(isReconnect = false) {
     return new Promise((resolve, reject) => {
       const appWs = new WebSocket(this.appServerUrl);
+      let openedAt = 0;
       appWs.onopen = () => {
         this.appServerWs = appWs;
+        openedAt = Date.now();
         this.intentionalDisconnect = false;
         this.reconnectAttempts = 0;
         this.log(isReconnect ? "Reconnected to app-server" : "Connected to app-server (persistent)");
@@ -156,13 +214,18 @@ class CodexAdapter extends EventEmitter {
           this.log("WARNING: response from app-server but no TUI connected, message dropped");
         }
       };
-      appWs.onerror = () => {
-        this.log("App-server connection error");
+      appWs.onerror = (event) => {
+        const errDetail = event.message ?? "unknown";
+        this.log(`App-server WS error: ${errDetail}`);
         if (!isReconnect)
-          reject(new Error("Failed to connect to app-server"));
+          reject(new Error(`Failed to connect to app-server: ${errDetail}`));
       };
-      appWs.onclose = () => {
-        this.log("App-server connection closed");
+      appWs.onclose = (event) => {
+        const isCurrent = this.appServerWs === appWs;
+        const duration = openedAt > 0 ? `${((Date.now() - openedAt) / 1000).toFixed(1)}s` : "n/a";
+        this.log(`App-server WS closed (code=${event.code}, reason=${event.reason || "none"}, clean=${event.wasClean}, uptime=${duration}, intentional=${this.intentionalDisconnect}, isCurrent=${isCurrent})`);
+        if (!isCurrent)
+          return;
         this.appServerWs = null;
         this.clearResponseTrackingState();
         this.activeTurnIds.clear();
@@ -192,8 +255,8 @@ class CodexAdapter extends EventEmitter {
       try {
         await this.connectToAppServer(true);
         this.log("App-server reconnect successful");
-      } catch {
-        this.log("App-server reconnect attempt failed");
+      } catch (err) {
+        this.log(`App-server reconnect attempt failed: ${err?.message ?? "unknown"}`);
         this.scheduleReconnect();
       }
     }, delay);
@@ -223,8 +286,28 @@ class CodexAdapter extends EventEmitter {
     this.tuiConnId++;
     ws.data.connId = this.tuiConnId;
     this.tuiWs = ws;
-    this.log(`TUI connected (conn #${this.tuiConnId})`);
+    this.log(`TUI connected (conn #${this.tuiConnId}, appServerWs=${this.appServerWs?.readyState ?? "null"}, threadId=${this.threadId ?? "none"})`);
     this.emit("tuiConnected", this.tuiConnId);
+    const remaining = [];
+    for (const buffered of this.pendingServerRequests) {
+      const proxyId = this.nextProxyId++;
+      try {
+        const parsed = JSON.parse(buffered.raw);
+        parsed.id = proxyId;
+        ws.send(JSON.stringify(parsed));
+        this.serverRequestToProxy.set(proxyId, {
+          serverId: buffered.serverId,
+          connId: this.tuiConnId,
+          method: buffered.method,
+          timestamp: Date.now()
+        });
+        this.log(`Replayed buffered server request: ${buffered.method} (server id=${buffered.serverId} \u2192 proxy id=${proxyId})`);
+      } catch (e) {
+        this.log(`Failed to replay buffered server request: ${buffered.method} (server id=${buffered.serverId}): ${e.message}`);
+        remaining.push(buffered);
+      }
+    }
+    this.pendingServerRequests = remaining;
   }
   onTuiDisconnect(ws) {
     const connId = ws.data.connId;
@@ -244,6 +327,33 @@ class CodexAdapter extends EventEmitter {
       this.log(`Dropping message from stale TUI conn #${connId} (current is #${this.tuiConnId})`);
       return;
     }
+    try {
+      const parsed = JSON.parse(data);
+      if (parsed.id !== undefined && !parsed.method) {
+        const normalizedId = this.normalizeNumericId(parsed.id);
+        const pending = !isNaN(normalizedId) ? this.serverRequestToProxy.get(normalizedId) : undefined;
+        if (pending !== undefined) {
+          if (pending.connId !== connId) {
+            this.log(`Dropping stale server request response (proxy id=${normalizedId}, expected conn #${pending.connId}, got #${connId})`);
+            return;
+          }
+          if (!this.appServerWs || this.appServerWs.readyState !== WebSocket.OPEN) {
+            this.log(`Cannot forward approval response: app-server disconnected (proxy id=${normalizedId})`);
+            return;
+          }
+          parsed.id = pending.serverId;
+          try {
+            this.appServerWs.send(JSON.stringify(parsed));
+            this.serverRequestToProxy.delete(normalizedId);
+            this.log(`TUI \u2192 app-server: ${pending.method} response (proxy id=${normalizedId} \u2192 server id=${pending.serverId})`);
+          } catch (e) {
+            parsed.id = normalizedId;
+            this.log(`Failed to forward approval response (proxy id=${normalizedId}): ${e.message}`);
+          }
+          return;
+        }
+      }
+    } catch {}
     let forwarded = data;
     try {
       const parsed = JSON.parse(data);
@@ -270,19 +380,55 @@ class CodexAdapter extends EventEmitter {
   handleAppServerPayload(raw) {
     try {
       const parsed = JSON.parse(raw);
-      if (parsed.id === undefined) {
-        const forwarded = this.patchResponse(parsed, raw);
-        this.interceptServerMessage(parsed);
+      if (isAppServerNotification(parsed) || typeof parsed === "object" && parsed !== null && !("id" in parsed)) {
+        const notificationLike = parsed;
+        const forwarded = this.patchResponse(notificationLike, raw);
+        this.interceptServerMessage(notificationLike);
         return forwarded;
       }
-      return this.handleAppServerResponse(parsed, raw);
+      if (isAppServerRequestMessage(parsed)) {
+        this.handleServerRequest(parsed, raw);
+        return null;
+      }
+      if (isAppServerResponseMessage(parsed)) {
+        return this.handleAppServerResponse(parsed, raw);
+      }
+      this.log(`Dropping unclassifiable app-server message: ${raw.slice(0, 100)}`);
+      return null;
     } catch {
       return raw;
     }
   }
+  handleServerRequest(parsed, raw) {
+    const serverId = parsed.id;
+    const method = parsed.method;
+    if (!this.tuiWs) {
+      this.pendingServerRequests.push({ raw, serverId, method });
+      this.log(`Server request buffered (no TUI): ${method} (server id=${serverId})`);
+      return;
+    }
+    const proxyId = this.nextProxyId++;
+    parsed.id = proxyId;
+    try {
+      this.tuiWs.send(JSON.stringify(parsed));
+    } catch (e) {
+      this.log(`Server request send failed, buffering: ${method} (server id=${serverId}): ${e.message}`);
+      this.pendingServerRequests.push({ raw, serverId, method });
+      return;
+    }
+    this.serverRequestToProxy.set(proxyId, { serverId, connId: this.tuiConnId, method, timestamp: Date.now() });
+    this.log(`Server request: ${method} (server id=${serverId} \u2192 proxy id=${proxyId}, conn #${this.tuiConnId})`);
+  }
+  normalizeNumericId(id) {
+    if (typeof id === "number")
+      return id;
+    if (typeof id === "string" && /^-?\d+$/.test(id))
+      return Number(id);
+    return NaN;
+  }
   handleAppServerResponse(parsed, raw) {
     const responseId = parsed.id;
-    const numericId = typeof responseId === "number" ? responseId : typeof responseId === "string" && /^-?\d+$/.test(responseId) ? Number(responseId) : NaN;
+    const numericId = this.normalizeNumericId(responseId);
     const mapping = !isNaN(numericId) ? this.upstreamToClient.get(numericId) : undefined;
     if (mapping) {
       this.upstreamToClient.delete(numericId);
@@ -311,7 +457,7 @@ class CodexAdapter extends EventEmitter {
     return null;
   }
   patchResponse(parsed, raw) {
-    if (parsed.error && parsed.id !== undefined) {
+    if (isAppServerResponseMessage(parsed) && parsed.error && parsed.id !== undefined) {
       const errMsg = parsed.error.message ?? "";
       if (errMsg.includes("rate limits") || errMsg.includes("rateLimits")) {
         this.log(`Patching rateLimits error \u2192 mock success (id: ${parsed.id})`);
@@ -346,8 +492,9 @@ class CodexAdapter extends EventEmitter {
   }
   interceptServerMessage(msg, connId) {
     this.handleTrackedResponse(msg, connId);
-    if (msg.method)
+    if ("method" in msg && typeof msg.method === "string" && isAppServerNotification(msg)) {
       this.handleServerNotification(msg);
+    }
   }
   handleServerNotification(msg) {
     const { method, params } = msg;
@@ -362,7 +509,10 @@ class CodexAdapter extends EventEmitter {
         break;
       }
       case "item/agentMessage/delta": {
-        const buf = this.agentMessageBuffers.get(params?.itemId);
+        const itemId = params?.itemId;
+        if (typeof itemId !== "string")
+          break;
+        const buf = this.agentMessageBuffers.get(itemId);
         if (buf && params?.delta)
           buf.push(params.delta);
         break;
@@ -407,14 +557,16 @@ class CodexAdapter extends EventEmitter {
     return `${connId ?? this.tuiConnId}:${base}`;
   }
   trackPendingRequest(message, connId, _proxyId) {
-    const method = message?.method;
-    const key = this.pendingKey(message?.id, connId);
-    this.log(`[track] method=${method} id=${message?.id} (type=${typeof message?.id}) key=${key}`);
-    if (!key || !TRACKED_REQUEST_METHODS.has(method))
+    const rpcId = "id" in message ? message.id : undefined;
+    const method = "method" in message && typeof message.method === "string" ? message.method : undefined;
+    const key = this.pendingKey(rpcId, connId);
+    this.log(`[track] method=${method} id=${rpcId} (type=${typeof rpcId}) key=${key}`);
+    if (!key || !isTrackedAppServerRequestMethod(method))
       return;
     const pending = { method };
     if (method === "turn/start") {
-      const threadId = message?.params?.threadId;
+      const params = "params" in message && typeof message.params === "object" && message.params !== null ? message.params : undefined;
+      const threadId = params?.threadId;
       if (typeof threadId === "string" && threadId.length > 0) {
         pending.threadId = threadId;
       }
@@ -511,6 +663,20 @@ class CodexAdapter extends EventEmitter {
       this.upstreamToClient.delete(upId);
       this.trackStaleProxyId(upId);
     }
+    for (const [proxyId, pending] of this.serverRequestToProxy.entries()) {
+      if (pending.connId === connId) {
+        this.clearTrackedId(this.serverRequestTtlTimers, proxyId);
+        const timer = setTimeout(() => {
+          this.serverRequestTtlTimers.delete(proxyId);
+          if (this.serverRequestToProxy.get(proxyId)?.connId === connId) {
+            this.serverRequestToProxy.delete(proxyId);
+            this.log(`Expired stale server request mapping (proxy id=${proxyId}, method=${pending.method})`);
+          }
+        }, CodexAdapter.RESPONSE_TRACKING_TTL_MS);
+        timer.unref?.();
+        this.serverRequestTtlTimers.set(proxyId, timer);
+      }
+    }
   }
   trackStaleProxyId(proxyId) {
     this.clearTrackedId(this.staleProxyIds, proxyId);
@@ -556,6 +722,12 @@ class CodexAdapter extends EventEmitter {
       clearTimeout(timer);
     }
     this.bridgeRequestIds.clear();
+    for (const timer of this.serverRequestTtlTimers.values()) {
+      clearTimeout(timer);
+    }
+    this.serverRequestTtlTimers.clear();
+    this.serverRequestToProxy.clear();
+    this.pendingServerRequests = [];
   }
   async checkPorts() {
     for (const port of [this.appPort, this.proxyPort]) {
@@ -604,12 +776,15 @@ class CodexAdapter extends EventEmitter {
       }
     }
   }
-  log(msg) {
-    const line = `[${new Date().toISOString()}] [CodexAdapter] ${msg}
+  log(msg, verboseOnly = false) {
+    if (verboseOnly && !this.verbose)
+      return;
+    const prefix = verboseOnly ? "[CodexAdapter:VERBOSE]" : "[CodexAdapter]";
+    const line = `[${new Date().toISOString()}] ${prefix} ${msg}
 `;
     process.stderr.write(line);
     try {
-      appendFileSync(LOG_FILE, line);
+      appendFileSync(this.logFilePath, line);
     } catch {}
   }
 }
@@ -1257,8 +1432,15 @@ var MAX_BUFFERED_MESSAGES = parseInt(process.env.AGENTBRIDGE_MAX_BUFFERED_MESSAG
 var FILTER_MODE = process.env.AGENTBRIDGE_FILTER_MODE === "full" ? "full" : "filtered";
 var IDLE_SHUTDOWN_MS = parseInt(process.env.AGENTBRIDGE_IDLE_SHUTDOWN_MS ?? String(config.idleShutdownSeconds * 1000), 10);
 var ATTENTION_WINDOW_MS = parseInt(process.env.AGENTBRIDGE_ATTENTION_WINDOW_MS ?? String(config.turnCoordination.attentionWindowSeconds * 1000), 10);
+var VERBOSE = !/^(0|false|no|off)$/i.test(process.env.AGENTBRIDGE_VERBOSE ?? "1");
 var daemonLifecycle = new DaemonLifecycle({ stateDir, controlPort: CONTROL_PORT, log });
-var codex = new CodexAdapter(CODEX_APP_PORT, CODEX_PROXY_PORT);
+var codex = new CodexAdapter({
+  appPort: CODEX_APP_PORT,
+  proxyPort: CODEX_PROXY_PORT,
+  logFile: stateDir.logFile,
+  verbose: VERBOSE
+});
+var controlSocketOpenedAt = new WeakMap;
 var attachCmd = `codex --enable tui_app_server --remote ${codex.proxyUrl}`;
 var controlServer = null;
 var attachedClaude = null;
@@ -1398,12 +1580,18 @@ function startControlServer() {
       sendPings: true,
       open: (ws) => {
         ws.data.clientId = ++nextControlClientId;
+        controlSocketOpenedAt.set(ws, Date.now());
         log(`Frontend socket opened (#${ws.data.clientId})`);
+        vlog(`Frontend socket open details (#${ws.data.clientId}): readyState=${ws.readyState}, remoteAddress=${ws.remoteAddress ?? "n/a"}, currentAttached=${attachedClaude?.data.clientId ?? "none"}`);
       },
       close: (ws, code, reason) => {
-        log(`Frontend socket closed (#${ws.data.clientId}, code=${code}, reason=${reason || "none"}, wasAttached=${attachedClaude === ws})`);
+        const openedAt = controlSocketOpenedAt.get(ws);
+        controlSocketOpenedAt.delete(ws);
+        const duration = openedAt ? `${((Date.now() - openedAt) / 1000).toFixed(1)}s` : "n/a";
+        log(`Frontend socket closed (#${ws.data.clientId}, code=${code}, reason=${reason || "none"}, uptime=${duration}, wasAttached=${attachedClaude === ws})`);
+        vlog(`Close context (#${ws.data.clientId}): shuttingDown=${shuttingDown}, codexBootstrapped=${codexBootstrapped}, bufferedMessages=${bufferedMessages.length}, tui=${tuiConnectionState.snapshot().tuiConnected}`);
         if (attachedClaude === ws) {
-          detachClaude(ws, "frontend socket closed");
+          detachClaude(ws, `frontend socket closed (code=${code}, reason=${reason || "none"})`);
         }
       },
       message: (ws, raw) => {
@@ -1704,9 +1892,13 @@ function removeStatusFile() {
 }
 async function bootCodex() {
   log("Starting AgentBridge daemon...");
+  log(`Log file: ${stateDir.logFile}`);
+  log(`Verbose mode: ${VERBOSE ? "ON (default)" : "off (AGENTBRIDGE_VERBOSE=0)"}`);
   log(`Codex app-server: ${codex.appServerUrl}`);
   log(`Codex proxy: ${codex.proxyUrl}`);
   log(`Control server: ws://127.0.0.1:${CONTROL_PORT}/ws`);
+  vlog(`Env: pid=${process.pid}, node/bun=${process.versions.bun ?? process.version}, platform=${process.platform}`);
+  vlog(`Config: idleShutdownMs=${IDLE_SHUTDOWN_MS}, attentionWindowMs=${ATTENTION_WINDOW_MS}, filterMode=${FILTER_MODE}`);
   try {
     await codex.start();
     codexBootstrapped = true;
@@ -1751,7 +1943,23 @@ function log(msg) {
   process.stderr.write(line);
   try {
     appendFileSync2(stateDir.logFile, line);
-  } catch {}
+  } catch (err) {
+    process.stderr.write(`[${new Date().toISOString()}] [AgentBridgeDaemon] WARN: log write failed: ${err?.message}
+`);
+  }
+}
+function vlog(msg) {
+  if (!VERBOSE)
+    return;
+  const line = `[${new Date().toISOString()}] [AgentBridgeDaemon:VERBOSE] ${msg}
+`;
+  process.stderr.write(line);
+  try {
+    appendFileSync2(stateDir.logFile, line);
+  } catch (err) {
+    process.stderr.write(`[${new Date().toISOString()}] [AgentBridgeDaemon] WARN: vlog write failed: ${err?.message}
+`);
+  }
 }
 if (daemonLifecycle.wasKilled()) {
   log("Killed sentinel found \u2014 daemon was intentionally stopped. Exiting immediately.");
