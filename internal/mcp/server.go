@@ -1,0 +1,170 @@
+package mcp
+
+import (
+	"bufio"
+	"context"
+	"encoding/json"
+	"fmt"
+	"io"
+	"sync"
+	"sync/atomic"
+	"time"
+
+	"github.com/raysonmeng/agent-bridge/internal/protocol"
+)
+
+// ServerOptions configures an MCP server.
+type ServerOptions struct {
+	Name                string
+	Version             string
+	Instructions        string
+	ReplyHandler        func(ctx context.Context, msg protocol.BridgeMessage, requireReply bool) ReplyResult
+	Logger              func(msg string)
+	DeliveryMode        DeliveryMode
+	MaxBufferedMessages int
+}
+
+// DeliveryMode identifies how the server surfaces Codex messages to Claude.
+type DeliveryMode string
+
+const (
+	DeliveryPush DeliveryMode = "push"
+	DeliveryPull DeliveryMode = "pull"
+)
+
+// ReplyResult is what ReplyHandler returns to the server.
+type ReplyResult struct {
+	Success bool
+	Error   string
+}
+
+// Server is a stdio MCP server.
+type Server struct {
+	opts      ServerOptions
+	sessionID string
+
+	writeMu sync.Mutex
+	writer  io.Writer
+
+	queueMu         sync.Mutex
+	queue           []protocol.BridgeMessage
+	droppedMessages int
+
+	notificationSeq atomic.Int64
+
+	closed chan struct{}
+}
+
+// NewServer constructs a server.
+func NewServer(opts ServerOptions) *Server {
+	if opts.Name == "" {
+		opts.Name = "agentbridge"
+	}
+	if opts.Version == "" {
+		opts.Version = "0.2.0"
+	}
+	if opts.DeliveryMode == "" {
+		opts.DeliveryMode = DeliveryPush
+	}
+	if opts.MaxBufferedMessages == 0 {
+		opts.MaxBufferedMessages = 100
+	}
+	return &Server{
+		opts:      opts,
+		sessionID: fmt.Sprintf("codex_%d", time.Now().UnixMilli()),
+		closed:    make(chan struct{}),
+	}
+}
+
+// Serve reads line-delimited JSON requests from r and writes responses and notifications to w.
+func (s *Server) Serve(ctx context.Context, r io.ReadCloser, w io.WriteCloser) error {
+	s.writer = w
+	defer close(s.closed)
+
+	scanner := bufio.NewScanner(r)
+	scanner.Buffer(make([]byte, 64*1024), 4*1024*1024)
+
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		for scanner.Scan() {
+			line := append([]byte(nil), scanner.Bytes()...)
+			if len(line) == 0 {
+				continue
+			}
+			s.handleRequest(ctx, line)
+		}
+	}()
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-done:
+		return scanner.Err()
+	}
+}
+
+func (s *Server) handleRequest(ctx context.Context, raw []byte) {
+	var req Request
+	if err := json.Unmarshal(raw, &req); err != nil {
+		s.log("bad request: " + err.Error())
+		return
+	}
+
+	switch req.Method {
+	case "initialize":
+		s.handleInitialize(req)
+	case "initialized", "notifications/initialized":
+	case "tools/list":
+		s.handleToolsList(req)
+	case "tools/call":
+		s.handleToolsCall(ctx, req)
+	default:
+		if req.ID != nil {
+			s.respondError(req.ID, -32601, "method not found: "+req.Method)
+		}
+	}
+}
+
+func (s *Server) handleInitialize(req Request) {
+	result := InitializeResult{
+		ProtocolVersion: "2025-03-26",
+		ServerInfo:      ServerInfo{Name: s.opts.Name, Version: s.opts.Version},
+		Capabilities:    ServerCapabilities{Experimental: map[string]struct{}{"claude/channel": {}}},
+		Instructions:    s.opts.Instructions,
+	}
+	s.respond(req.ID, result)
+}
+
+func (s *Server) handleToolsList(req Request) {
+	s.respond(req.ID, ToolListResult{Tools: nil})
+}
+
+func (s *Server) handleToolsCall(_ context.Context, req Request) {
+	s.respondError(req.ID, -32601, "unknown tool")
+}
+
+func (s *Server) respond(id json.RawMessage, result any) {
+	s.write(Response{JSONRPC: "2.0", ID: id, Result: result})
+}
+
+func (s *Server) respondError(id json.RawMessage, code int, message string) {
+	s.write(Response{JSONRPC: "2.0", ID: id, Error: &ResponseError{Code: code, Message: message}})
+}
+
+func (s *Server) write(v any) {
+	payload, err := json.Marshal(v)
+	if err != nil {
+		s.log("marshal: " + err.Error())
+		return
+	}
+	s.writeMu.Lock()
+	defer s.writeMu.Unlock()
+	_, _ = s.writer.Write(payload)
+	_, _ = s.writer.Write([]byte{'\n'})
+}
+
+func (s *Server) log(msg string) {
+	if s.opts.Logger != nil {
+		s.opts.Logger(msg)
+	}
+}
