@@ -15,12 +15,13 @@ import (
 
 // ClientOptions configures a Client.
 type ClientOptions struct {
-	URL          string
-	OnCodexMsg   func(msg protocol.BridgeMessage)
-	OnStatus     func(status Status)
-	OnDisconnect func(code int, reason string, uptime time.Duration)
-	Logger       func(msg string)
-	MaxBackoff   time.Duration
+	URL             string
+	OnCodexMsg      func(msg protocol.BridgeMessage)
+	OnStatus        func(status Status)
+	OnDisconnect    func(code int, reason string, uptime time.Duration)
+	Logger          func(msg string)
+	MaxBackoff      time.Duration
+	ShouldReconnect func() bool
 }
 
 // Client dials the daemon control server with reconnect.
@@ -107,6 +108,9 @@ func (c *Client) RunWithReconnect(ctx context.Context) error {
 	attempt := 0
 	for {
 		if ctx.Err() != nil {
+			return nil
+		}
+		if c.opts.ShouldReconnect != nil && !c.opts.ShouldReconnect() {
 			return nil
 		}
 		err := c.Connect(ctx)

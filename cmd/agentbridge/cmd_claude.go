@@ -2,7 +2,9 @@ package main
 
 import (
 	"context"
+	"fmt"
 	"os"
+	"sync/atomic"
 	"time"
 
 	"github.com/raysonmeng/agent-bridge/internal/control"
@@ -42,6 +44,14 @@ func newClaudeCmd() *cobra.Command {
 			defer cancel()
 
 			var srv *mcp.Server
+			var bridgeDisabled atomic.Bool
+			pushSystem := func(id, content string) {
+				if srv == nil {
+					return
+				}
+				srv.PushMessage(protocol.BridgeMessage{ID: fmt.Sprintf("%s_%d", id, time.Now().UnixMilli()), Source: protocol.SourceCodex, Content: content, Timestamp: time.Now().UnixMilli()})
+			}
+
 			cc := control.NewClient(control.ClientOptions{
 				URL: lc.ControlWsURL(),
 				OnCodexMsg: func(msg protocol.BridgeMessage) {
@@ -49,7 +59,14 @@ func newClaudeCmd() *cobra.Command {
 						srv.PushMessage(msg)
 					}
 				},
-				Logger: logToStderr,
+				OnDisconnect: func(_ int, _ string, _ time.Duration) {
+					if lc.WasKilled() {
+						bridgeDisabled.Store(true)
+						pushSystem("system_bridge_disabled", "⛔ AgentBridge was stopped by agentbridge kill. Bridge is staying idle until you restart with agentbridge codex.")
+					}
+				},
+				ShouldReconnect: func() bool { return !bridgeDisabled.Load() },
+				Logger:          logToStderr,
 			})
 
 			srv = mcp.NewServer(mcp.ServerOptions{
@@ -57,10 +74,22 @@ func newClaudeCmd() *cobra.Command {
 				Version:      version,
 				Instructions: claudeInstructions,
 				ReplyHandler: func(ctx context.Context, msg protocol.BridgeMessage, requireReply bool) mcp.ReplyResult {
+					if bridgeDisabled.Load() {
+						return mcp.ReplyResult{Success: false, Error: "AgentBridge is disabled by agentbridge kill. Restart with agentbridge codex to reconnect."}
+					}
 					ok, errMsg := cc.SendReply(ctx, msg, requireReply)
 					return mcp.ReplyResult{Success: ok, Error: errMsg}
 				},
 			})
+
+			if lc.WasKilled() {
+				bridgeDisabled.Store(true)
+				go func() {
+					time.Sleep(100 * time.Millisecond)
+					pushSystem("system_bridge_disabled", "⛔ AgentBridge was stopped by agentbridge kill. Bridge is staying idle until you restart with agentbridge codex.")
+				}()
+				return srv.Serve(ctx, os.Stdin, os.Stdout)
+			}
 
 			startCtx, startCancel := context.WithTimeout(ctx, 15*time.Second)
 			defer startCancel()

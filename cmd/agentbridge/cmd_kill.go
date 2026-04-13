@@ -2,7 +2,11 @@ package main
 
 import (
 	"fmt"
+	"os"
+	"strconv"
+	"strings"
 	"syscall"
+	"time"
 
 	"github.com/raysonmeng/agent-bridge/internal/daemon"
 	"github.com/raysonmeng/agent-bridge/internal/statedir"
@@ -19,13 +23,21 @@ func newKillCmd() *cobra.Command {
 			if err := lc.WriteKilled(); err != nil {
 				return err
 			}
-			pid := lc.ReadPid()
-			if pid > 0 && daemon.IsProcessAlive(pid) {
-				_ = syscall.Kill(pid, syscall.SIGTERM)
-				fmt.Printf("sent SIGTERM to pid %d and wrote killed sentinel\n", pid)
-				return nil
+			if b, err := os.ReadFile(sd.TuiPidFile()); err == nil {
+				if pid, err := strconv.Atoi(strings.TrimSpace(string(b))); err == nil && daemon.IsProcessAlive(pid) {
+					_ = syscall.Kill(pid, syscall.SIGTERM)
+				}
+				_ = os.Remove(sd.TuiPidFile())
 			}
-			fmt.Println("daemon not running; sentinel written.")
+			killed, err := lc.Kill(3 * time.Second)
+			if err != nil {
+				return err
+			}
+			if killed {
+				fmt.Println("daemon stopped and killed sentinel written.")
+			} else {
+				fmt.Println("daemon not running; sentinel written.")
+			}
 			return nil
 		},
 	}

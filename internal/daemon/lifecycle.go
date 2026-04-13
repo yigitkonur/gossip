@@ -10,6 +10,7 @@ import (
 	"os"
 	"os/exec"
 	"strconv"
+	"strings"
 	"syscall"
 	"time"
 
@@ -29,9 +30,7 @@ type Lifecycle struct {
 }
 
 // NewLifecycle constructs a Lifecycle.
-func NewLifecycle(opts LifecycleOptions) *Lifecycle {
-	return &Lifecycle{opts: opts}
-}
+func NewLifecycle(opts LifecycleOptions) *Lifecycle { return &Lifecycle{opts: opts} }
 
 // HealthURL returns the daemon /healthz URL.
 func (l *Lifecycle) HealthURL() string {
@@ -64,11 +63,14 @@ func (l *Lifecycle) ClearKilled() { _ = os.Remove(l.opts.StateDir.KilledFile()) 
 
 // WritePid writes our own PID to the pid file.
 func (l *Lifecycle) WritePid() error {
-	return os.WriteFile(l.opts.StateDir.PidFile(), []byte(strconv.Itoa(os.Getpid())), 0o644)
+	return os.WriteFile(l.opts.StateDir.PidFile(), []byte(strconv.Itoa(os.Getpid())+"\n"), 0o644)
 }
 
 // RemovePid removes the pid file.
 func (l *Lifecycle) RemovePid() { _ = os.Remove(l.opts.StateDir.PidFile()) }
+
+// RemoveStatusFile removes the daemon status file.
+func (l *Lifecycle) RemoveStatusFile() { _ = os.Remove(l.opts.StateDir.StatusFile()) }
 
 // ReadPid returns the daemon pid, or 0 if missing.
 func (l *Lifecycle) ReadPid() int {
@@ -76,7 +78,7 @@ func (l *Lifecycle) ReadPid() int {
 	if err != nil {
 		return 0
 	}
-	pid, err := strconv.Atoi(string(b))
+	pid, err := strconv.Atoi(string(bytesTrimSpace(b)))
 	if err != nil {
 		return 0
 	}
@@ -110,15 +112,36 @@ func (l *Lifecycle) IsHealthy(ctx context.Context) bool {
 	return resp.StatusCode == http.StatusOK
 }
 
+// IsReady pings /readyz and returns true on HTTP 200.
+func (l *Lifecycle) IsReady(ctx context.Context) bool {
+	client := &http.Client{Timeout: time.Second}
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, l.ReadyURL(), nil)
+	if err != nil {
+		return false
+	}
+	resp, err := client.Do(req)
+	if err != nil {
+		return false
+	}
+	_ = resp.Body.Close()
+	return resp.StatusCode == http.StatusOK
+}
+
 // EnsureRunning checks health, then PID, then launches as needed.
 func (l *Lifecycle) EnsureRunning(ctx context.Context) error {
 	if l.IsHealthy(ctx) {
 		return l.waitReady(ctx)
 	}
-	if pid := l.ReadPid(); pid > 0 && IsProcessAlive(pid) {
+	if pid := l.ReadPid(); pid > 0 {
+		if IsProcessAlive(pid) && l.isDaemonProcess(pid) {
+			return l.waitReady(ctx)
+		}
+		l.cleanup()
+	}
+	if !l.acquireLock() {
 		return l.waitReady(ctx)
 	}
-	l.RemovePid()
+	defer l.releaseLock()
 	return l.Launch(ctx)
 }
 
@@ -140,14 +163,46 @@ func (l *Lifecycle) Launch(ctx context.Context) error {
 	return l.waitReady(ctx)
 }
 
+// Kill stops the daemon process referenced by the pid file.
+func (l *Lifecycle) Kill(gracefulTimeout time.Duration) (bool, error) {
+	pid := l.ReadPid()
+	if pid == 0 {
+		l.cleanup()
+		return false, nil
+	}
+	if !IsProcessAlive(pid) {
+		l.cleanup()
+		return false, nil
+	}
+	if !l.isDaemonProcess(pid) {
+		l.cleanup()
+		return false, nil
+	}
+	if err := syscall.Kill(pid, syscall.SIGTERM); err != nil {
+		l.cleanup()
+		return false, err
+	}
+	deadline := time.Now().Add(gracefulTimeout)
+	for time.Now().Before(deadline) {
+		if !IsProcessAlive(pid) {
+			l.cleanup()
+			return true, nil
+		}
+		time.Sleep(200 * time.Millisecond)
+	}
+	_ = syscall.Kill(pid, syscall.SIGKILL)
+	l.cleanup()
+	return true, nil
+}
+
 func (l *Lifecycle) waitReady(ctx context.Context) error {
 	deadline := time.Now().Add(10 * time.Second)
 	for {
-		if l.IsHealthy(ctx) {
+		if l.IsReady(ctx) {
 			return nil
 		}
 		if time.Now().After(deadline) {
-			return errors.New("daemon did not become healthy")
+			return errors.New("daemon did not become ready")
 		}
 		select {
 		case <-ctx.Done():
@@ -155,4 +210,44 @@ func (l *Lifecycle) waitReady(ctx context.Context) error {
 		case <-time.After(250 * time.Millisecond):
 		}
 	}
+}
+
+func (l *Lifecycle) acquireLock() bool {
+	l.opts.StateDir.Ensure()
+	f, err := os.OpenFile(l.opts.StateDir.LockFile(), os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0o644)
+	if err != nil {
+		return false
+	}
+	_, _ = f.WriteString(strconv.Itoa(os.Getpid()) + "\n")
+	_ = f.Close()
+	return true
+}
+
+func (l *Lifecycle) releaseLock() { _ = os.Remove(l.opts.StateDir.LockFile()) }
+
+func (l *Lifecycle) cleanup() {
+	l.RemovePid()
+	l.RemoveStatusFile()
+	l.releaseLock()
+}
+
+func (l *Lifecycle) isDaemonProcess(pid int) bool {
+	out, err := exec.Command("ps", "-p", strconv.Itoa(pid), "-o", "command=").Output()
+	if err != nil {
+		return false
+	}
+	cmd := string(bytesTrimSpace(out))
+	return strings.Contains(cmd, "daemon") && (strings.Contains(cmd, "agentbridge") || strings.Contains(cmd, "agent_bridge"))
+}
+
+func bytesTrimSpace(b []byte) []byte {
+	start := 0
+	for start < len(b) && (b[start] == ' ' || b[start] == '\n' || b[start] == '\t' || b[start] == '\r') {
+		start++
+	}
+	end := len(b)
+	for end > start && (b[end-1] == ' ' || b[end-1] == '\n' || b[end-1] == '\t' || b[end-1] == '\r') {
+		end--
+	}
+	return b[start:end]
 }

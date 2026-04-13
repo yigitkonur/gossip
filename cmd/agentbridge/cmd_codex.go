@@ -1,10 +1,13 @@
 package main
 
 import (
+	"context"
 	"fmt"
 	"os"
 	"os/exec"
+	"time"
 
+	"github.com/coder/websocket"
 	"github.com/raysonmeng/agent-bridge/internal/config"
 	"github.com/raysonmeng/agent-bridge/internal/daemon"
 	"github.com/raysonmeng/agent-bridge/internal/statedir"
@@ -27,13 +30,43 @@ func newCodexCmd() *cobra.Command {
 				return err
 			}
 			proxyURL := fmt.Sprintf("ws://127.0.0.1:%d", cfg.Daemon.ProxyPort)
+			if err := waitForProxyReady(cmd.Context(), proxyURL); err != nil {
+				return err
+			}
 			fmt.Println("daemon ready. launching codex TUI with --remote", proxyURL)
 			tui := exec.Command("codex", "--enable", "tui_app_server", "--remote", proxyURL)
 			tui.Stdin = os.Stdin
 			tui.Stdout = os.Stdout
 			tui.Stderr = os.Stderr
-			return tui.Run()
+			if err := tui.Start(); err != nil {
+				return err
+			}
+			_ = os.WriteFile(sd.TuiPidFile(), []byte(fmt.Sprintf("%d\n", tui.Process.Pid)), 0o644)
+			err := tui.Wait()
+			_ = os.Remove(sd.TuiPidFile())
+			return err
 		},
+	}
+}
+
+func waitForProxyReady(ctx context.Context, proxyURL string) error {
+	deadline := time.Now().Add(10 * time.Second)
+	for {
+		dialCtx, cancel := context.WithTimeout(ctx, time.Second)
+		conn, _, err := websocket.Dial(dialCtx, proxyURL, nil)
+		cancel()
+		if err == nil {
+			_ = conn.Close(websocket.StatusNormalClosure, "")
+			return nil
+		}
+		if time.Now().After(deadline) {
+			return err
+		}
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-time.After(250 * time.Millisecond):
+		}
 	}
 }
 

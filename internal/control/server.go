@@ -26,6 +26,7 @@ type Server struct {
 	conns    map[int64]*controlConn
 	nextID   int64
 	attached *controlConn
+	buffered []protocol.BridgeMessage
 }
 
 // NewServer constructs a control server bound to the given handler.
@@ -48,9 +49,43 @@ func (s *Server) Broadcast(ctx context.Context, msg protocol.BridgeMessage) {
 	c := s.attached
 	s.mu.Unlock()
 	if c == nil {
+		s.bufferMessage(msg)
 		return
 	}
-	_ = c.write(ctx, ServerMessage{Type: ServerMsgCodexToClaude, Message: &msg})
+	if err := c.write(ctx, ServerMessage{Type: ServerMsgCodexToClaude, Message: &msg}); err != nil {
+		s.bufferMessage(msg)
+	}
+}
+
+// QueuedCount returns the number of buffered messages awaiting bridge attach.
+func (s *Server) QueuedCount() int {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return len(s.buffered)
+}
+
+func (s *Server) bufferMessage(msg protocol.BridgeMessage) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.buffered = append(s.buffered, msg)
+	if len(s.buffered) > 100 {
+		s.buffered = s.buffered[len(s.buffered)-100:]
+	}
+}
+
+func (s *Server) flushBuffered(ctx context.Context, c *controlConn) {
+	s.mu.Lock()
+	msgs := append([]protocol.BridgeMessage(nil), s.buffered...)
+	s.buffered = nil
+	s.mu.Unlock()
+	for i, msg := range msgs {
+		if err := c.write(ctx, ServerMessage{Type: ServerMsgCodexToClaude, Message: &msg}); err != nil {
+			s.mu.Lock()
+			s.buffered = append(msgs[i:], s.buffered...)
+			s.mu.Unlock()
+			return
+		}
+	}
 }
 
 func (s *Server) handleHealth(w http.ResponseWriter, _ *http.Request) {
@@ -61,7 +96,7 @@ func (s *Server) handleHealth(w http.ResponseWriter, _ *http.Request) {
 
 func (s *Server) handleReady(w http.ResponseWriter, _ *http.Request) {
 	status := s.handler.Snapshot()
-	if !status.BridgeReady {
+	if status.ThreadID == "" {
 		w.WriteHeader(http.StatusServiceUnavailable)
 	}
 	w.Header().Set("Content-Type", "application/json")
@@ -107,20 +142,34 @@ func (s *Server) handleWebSocket(w http.ResponseWriter, r *http.Request) {
 func (s *Server) handleClientMessage(ctx context.Context, c *controlConn, msg ClientMessage) {
 	switch msg.Type {
 	case ClientMsgClaudeConnect:
+		var previous *controlConn
 		s.mu.Lock()
+		previous = s.attached
 		s.attached = c
 		s.mu.Unlock()
+		if previous != nil && previous != c {
+			_ = previous.conn.Close(websocket.StatusPolicyViolation, "replaced by a newer Claude session")
+		}
 		s.handler.OnClaudeConnect()
 		status := s.handler.Snapshot()
 		_ = c.write(ctx, ServerMessage{Type: ServerMsgStatus, Status: &status})
+		s.flushBuffered(ctx, c)
 	case ClientMsgClaudeDisconnect:
 		s.mu.Lock()
-		if s.attached == c {
-			s.attached = nil
+		if s.attached != c {
+			s.mu.Unlock()
+			return
 		}
+		s.attached = nil
 		s.mu.Unlock()
 		s.handler.OnClaudeDisconnect("client requested")
 	case ClientMsgClaudeToCodex:
+		s.mu.Lock()
+		isAttached := s.attached == c
+		s.mu.Unlock()
+		if !isAttached {
+			return
+		}
 		if msg.Message == nil {
 			_ = c.write(ctx, ServerMessage{Type: ServerMsgClaudeToCodexResult, RequestID: msg.RequestID, Success: false, Error: "missing message"})
 			return
@@ -128,6 +177,12 @@ func (s *Server) handleClientMessage(ctx context.Context, c *controlConn, msg Cl
 		ok, errMsg := s.handler.OnClaudeToCodex(ctx, *msg.Message, msg.RequireReply)
 		_ = c.write(ctx, ServerMessage{Type: ServerMsgClaudeToCodexResult, RequestID: msg.RequestID, Success: ok, Error: errMsg})
 	case ClientMsgStatus:
+		s.mu.Lock()
+		isAttached := s.attached == c
+		s.mu.Unlock()
+		if !isAttached {
+			return
+		}
 		status := s.handler.Snapshot()
 		_ = c.write(ctx, ServerMessage{Type: ServerMsgStatus, Status: &status})
 	}

@@ -42,9 +42,11 @@ type Daemon struct {
 
 	statusBuf *filter.StatusBuffer
 
-	attachedMu     sync.Mutex
-	claudeAttached bool
-	bridgeReadyAt  atomic.Int64
+	attachedMu        sync.Mutex
+	claudeAttached    bool
+	idleShutdownTimer *time.Timer
+	runCancel         context.CancelFunc
+	bridgeReadyAt     atomic.Int64
 }
 
 // New constructs a Daemon from Options.
@@ -69,22 +71,28 @@ func New(opts Options) *Daemon {
 	return d
 }
 
-// Run blocks until ctx is cancelled, running all four layers under an errgroup.
+// Run blocks until ctx is cancelled, running all layers under an errgroup.
 func (d *Daemon) Run(ctx context.Context) error {
+	runCtx, runCancel := context.WithCancel(ctx)
+	d.runCancel = runCancel
+	defer runCancel()
+
 	d.codex = codex.NewClient(codex.ClientOptions{Port: d.opts.AppPort, Logger: d.opts.Logger})
-	if err := d.codex.Start(ctx); err != nil {
+	if err := d.codex.Start(runCtx); err != nil {
 		return fmt.Errorf("codex start: %w", err)
 	}
 
 	d.proxy = codex.NewProxy(d.codex)
 	d.proxy.OnTUIConnected = func(id int64) {
 		d.tuiState.HandleTUIConnected(id)
+		d.cancelIdleShutdown()
 		if d.opts.Logger != nil {
 			d.opts.Logger(fmt.Sprintf("TUI conn #%d connected", id))
 		}
 	}
 	d.proxy.OnTUIDisconnected = func(id int64) {
 		d.tuiState.HandleTUIDisconnected(id)
+		d.scheduleIdleShutdown()
 		if d.opts.Logger != nil {
 			d.opts.Logger(fmt.Sprintf("TUI conn #%d disconnected", id))
 		}
@@ -94,7 +102,7 @@ func (d *Daemon) Run(ctx context.Context) error {
 	d.control = control.NewServer(d)
 	d.statusBuf = filter.NewStatusBuffer(d.onStatusFlush, filter.StatusBufferOptions{})
 
-	g, gctx := errgroup.WithContext(ctx)
+	g, gctx := errgroup.WithContext(runCtx)
 
 	g.Go(func() error {
 		srv := &http.Server{Addr: fmt.Sprintf("127.0.0.1:%d", d.opts.ProxyPort), Handler: d.proxy}
@@ -119,6 +127,7 @@ func (d *Daemon) Run(ctx context.Context) error {
 	g.Go(func() error { return d.pumpCodexEvents(gctx) })
 
 	err := g.Wait()
+	d.cancelIdleShutdown()
 	_ = d.codex.Stop(context.Background())
 	return err
 }
@@ -168,6 +177,40 @@ func (d *Daemon) handleCodexEvent(ctx context.Context, ev codex.Event) {
 	}
 }
 
+func (d *Daemon) scheduleIdleShutdown() {
+	d.cancelIdleShutdown()
+	d.attachedMu.Lock()
+	attached := d.claudeAttached
+	d.attachedMu.Unlock()
+	if attached {
+		return
+	}
+	if d.proxy != nil && d.proxy.ConnectionCount() > 0 {
+		return
+	}
+	d.idleShutdownTimer = time.AfterFunc(d.opts.IdleShutdown, func() {
+		d.attachedMu.Lock()
+		attached := d.claudeAttached
+		d.attachedMu.Unlock()
+		if attached {
+			return
+		}
+		if d.proxy != nil && d.proxy.ConnectionCount() > 0 {
+			return
+		}
+		if d.runCancel != nil {
+			d.runCancel()
+		}
+	})
+}
+
+func (d *Daemon) cancelIdleShutdown() {
+	if d.idleShutdownTimer != nil {
+		d.idleShutdownTimer.Stop()
+		d.idleShutdownTimer = nil
+	}
+}
+
 func (d *Daemon) onStatusFlush(summary protocol.BridgeMessage) {
 	d.control.Broadcast(context.Background(), summary)
 }
@@ -181,6 +224,7 @@ func (d *Daemon) OnClaudeConnect() {
 	d.attachedMu.Lock()
 	d.claudeAttached = true
 	d.attachedMu.Unlock()
+	d.cancelIdleShutdown()
 	if d.opts.Logger != nil {
 		d.opts.Logger("claude frontend attached")
 	}
@@ -191,6 +235,7 @@ func (d *Daemon) OnClaudeDisconnect(reason string) {
 	d.attachedMu.Lock()
 	d.claudeAttached = false
 	d.attachedMu.Unlock()
+	d.scheduleIdleShutdown()
 	if d.opts.Logger != nil {
 		d.opts.Logger("claude frontend detached: " + reason)
 	}
@@ -215,14 +260,20 @@ func (d *Daemon) Snapshot() control.Status {
 	if d.codex != nil {
 		threadID = d.codex.ActiveThreadID()
 	}
-	status := control.Status{
+	queued := 0
+	if d.statusBuf != nil {
+		queued += d.statusBuf.Size()
+	}
+	if d.control != nil {
+		queued += d.control.QueuedCount()
+	}
+	return control.Status{
 		BridgeReady:        d.tuiState.CanReply(),
 		TuiConnected:       tuiConnected,
 		ThreadID:           threadID,
-		QueuedMessageCount: d.statusBuf.Size(),
+		QueuedMessageCount: queued,
 		ProxyURL:           fmt.Sprintf("ws://127.0.0.1:%d", d.opts.ProxyPort),
 		AppServerURL:       fmt.Sprintf("ws://127.0.0.1:%d", d.opts.AppPort),
 		Pid:                os.Getpid(),
 	}
-	return status
 }
