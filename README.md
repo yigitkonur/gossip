@@ -5,6 +5,8 @@
 
 [中文文档](README.zh-CN.md)
 
+> **Note:** This project has been rewritten in Go. The TypeScript/Bun implementation is preserved under `ts-legacy/` for reference. To use AgentBridge, install the Go binary (`go install github.com/raysonmeng/agent-bridge/cmd/agentbridge@latest`) or download a release tarball.
+
 Local bridge for bidirectional communication between Claude Code and Codex inside the same working session.
 
 AgentBridge uses a two-process architecture:

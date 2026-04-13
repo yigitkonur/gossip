@@ -5,6 +5,8 @@ English version: [README.md](README.md)
 [![CI](https://github.com/raysonmeng/agent-bridge/actions/workflows/ci.yml/badge.svg)](https://github.com/raysonmeng/agent-bridge/actions/workflows/ci.yml)
 [![License](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 
+> **说明：** 本项目已重写为 Go 版本。原有 TypeScript/Bun 实现保留在 `ts-legacy/` 目录中供参考。使用 AgentBridge 时，请安装 Go 二进制（`go install github.com/raysonmeng/agent-bridge/cmd/agentbridge@latest`）或下载 release 压缩包。
+
 让 Claude Code 和 Codex 在同一个工作会话中进行双向通信的本地 Bridge。
 
 AgentBridge 采用两层进程结构：

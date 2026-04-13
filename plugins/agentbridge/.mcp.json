@@ -1,0 +1,9 @@
+{
+  "mcpServers": {
+    "agentbridge": {
+      "command": "agentbridge",
+      "args": ["claude"],
+      "env": {}
+    }
+  }
+}

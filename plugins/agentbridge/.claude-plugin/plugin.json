@@ -1,0 +1,7 @@
+{
+  "name": "agentbridge",
+  "version": "0.2.0",
+  "description": "Bridge between Claude Code and Codex — bidirectional agent communication",
+  "author": "AgentBridge Contributors",
+  "homepage": "https://github.com/raysonmeng/agent-bridge"
+}
