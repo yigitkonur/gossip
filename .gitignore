@@ -1,8 +1,27 @@
-node_modules/
+# Go
+bin/
 dist/
+*.test
+*.out
+coverage.txt
+vendor/
+
+# Editor
+.idea/
+.vscode/
+*.swp
+
+# OS
+.DS_Store
+
+# AgentBridge runtime (should never be committed)
+.agentbridge/
+ts-legacy/node_modules/
+
+# Existing local/dev artifacts
+node_modules/
 coverage/
 *.log
-.DS_Store
 .claude/
 codex/
 agent_collab/
