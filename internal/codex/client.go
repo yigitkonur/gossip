@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"net/http"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -13,10 +14,6 @@ import (
 	"github.com/raysonmeng/agent-bridge/internal/jsonrpc"
 	"github.com/raysonmeng/agent-bridge/internal/protocol"
 )
-
-type proxyConnCounter interface {
-	ConnectionCount() int
-}
 
 // ClientOptions configures a Codex Client.
 type ClientOptions struct {
@@ -32,7 +29,7 @@ type Client struct {
 	proc   *Process
 	dialer *Dialer
 	rpc    *jsonrpc.Client
-	proxy  proxyConnCounter
+	proxy  *Proxy
 
 	threadID       atomic.Value
 	turnInProgress atomic.Bool
@@ -57,8 +54,8 @@ func NewClient(opts ClientOptions) *Client {
 	return c
 }
 
-// AttachProxy registers a proxy-like object so approval auto-accept can be suppressed when a TUI is attached.
-func (c *Client) AttachProxy(proxy proxyConnCounter) {
+// AttachProxy binds a TUI proxy so upstream messages are routed to both the RPC client and proxy.
+func (c *Client) AttachProxy(proxy *Proxy) {
 	c.proxy = proxy
 }
 
@@ -183,6 +180,9 @@ func (c *Client) startThread(ctx context.Context) error {
 
 func (c *Client) handleIncoming(payload []byte) {
 	c.rpc.HandleIncoming(payload)
+	if c.proxy != nil {
+		c.proxy.HandleUpstreamMessage(context.Background(), payload)
+	}
 }
 
 func (c *Client) consumeNotifications(ctx context.Context) {
@@ -307,3 +307,21 @@ func (w *dialerWriter) WriteJSON(ctx context.Context, v any) error {
 }
 
 func (w *dialerWriter) Close() error { return w.d.Close() }
+
+// ServeProxy starts an http.Server on the given address for the TUI proxy.
+func ServeProxy(ctx context.Context, addr string, proxy *Proxy) error {
+	srv := &http.Server{
+		Addr:    addr,
+		Handler: proxy,
+	}
+	errCh := make(chan error, 1)
+	go func() { errCh <- srv.ListenAndServe() }()
+	select {
+	case <-ctx.Done():
+		shutdownCtx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+		defer cancel()
+		return srv.Shutdown(shutdownCtx)
+	case err := <-errCh:
+		return err
+	}
+}
