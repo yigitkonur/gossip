@@ -43,8 +43,11 @@ type Server struct {
 	opts      ServerOptions
 	sessionID string
 
-	writeMu sync.Mutex
-	writer  io.Writer
+	writeMu        sync.Mutex
+	writer         io.Writer
+	preServePush   []protocol.BridgeMessage
+	ready          chan struct{}
+	readyCloseOnce sync.Once
 
 	queueMu         sync.Mutex
 	queue           []protocol.BridgeMessage
@@ -72,14 +75,21 @@ func NewServer(opts ServerOptions) *Server {
 	return &Server{
 		opts:      opts,
 		sessionID: fmt.Sprintf("codex_%d", time.Now().UnixMilli()),
+		ready:     make(chan struct{}),
 		closed:    make(chan struct{}),
 	}
 }
 
+// Ready is closed once Serve has bound stdio and notifications can be written safely.
+func (s *Server) Ready() <-chan struct{} { return s.ready }
+
 // Serve reads line-delimited JSON requests from r and writes responses and notifications to w.
 func (s *Server) Serve(ctx context.Context, r io.ReadCloser, w io.WriteCloser) error {
-	s.writer = w
+	buffered := s.bindWriter(w)
 	defer close(s.closed)
+	for _, msg := range buffered {
+		s.pushViaChannel(msg)
+	}
 
 	scanner := bufio.NewScanner(r)
 	scanner.Buffer(make([]byte, 64*1024), 4*1024*1024)
@@ -151,8 +161,21 @@ func (s *Server) write(v any) {
 	}
 	s.writeMu.Lock()
 	defer s.writeMu.Unlock()
+	if s.writer == nil {
+		return
+	}
 	_, _ = s.writer.Write(payload)
 	_, _ = s.writer.Write([]byte{'\n'})
+}
+
+func (s *Server) bindWriter(w io.Writer) []protocol.BridgeMessage {
+	s.writeMu.Lock()
+	defer s.writeMu.Unlock()
+	s.writer = w
+	buffered := append([]protocol.BridgeMessage(nil), s.preServePush...)
+	s.preServePush = nil
+	s.readyCloseOnce.Do(func() { close(s.ready) })
+	return buffered
 }
 
 func (s *Server) log(msg string) {

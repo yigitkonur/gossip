@@ -14,6 +14,9 @@ func (s *Server) PushMessage(msg protocol.BridgeMessage) {
 		msg.Timestamp = time.Now().UnixMilli()
 	}
 	if s.opts.DeliveryMode == DeliveryPush {
+		if s.bufferPushBeforeServe(msg) {
+			return
+		}
 		s.pushViaChannel(msg)
 		return
 	}
@@ -51,4 +54,17 @@ func (s *Server) queueForPull(msg protocol.BridgeMessage) {
 		s.droppedMessages++
 	}
 	s.queue = append(s.queue, msg)
+}
+
+func (s *Server) bufferPushBeforeServe(msg protocol.BridgeMessage) bool {
+	s.writeMu.Lock()
+	defer s.writeMu.Unlock()
+	if s.writer != nil {
+		return false
+	}
+	if len(s.preServePush) >= s.opts.MaxBufferedMessages {
+		s.preServePush = s.preServePush[1:]
+	}
+	s.preServePush = append(s.preServePush, msg)
+	return true
 }

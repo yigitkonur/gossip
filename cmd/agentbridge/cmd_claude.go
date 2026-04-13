@@ -4,9 +4,11 @@ import (
 	"context"
 	"fmt"
 	"os"
+	"strings"
 	"sync/atomic"
 	"time"
 
+	"github.com/raysonmeng/agent-bridge/internal/config"
 	"github.com/raysonmeng/agent-bridge/internal/control"
 	"github.com/raysonmeng/agent-bridge/internal/daemon"
 	"github.com/raysonmeng/agent-bridge/internal/mcp"
@@ -37,6 +39,7 @@ func newClaudeCmd() *cobra.Command {
 		RunE: func(cmd *cobra.Command, args []string) error {
 			sd := statedir.New("")
 			_ = sd.Ensure()
+			cfg := config.NewService("").LoadOrDefault()
 			lc := daemon.NewLifecycle(daemon.LifecycleOptions{StateDir: sd, ControlPort: controlPort(), Logger: logToStderr})
 
 			ctx := cmd.Context()
@@ -75,6 +78,7 @@ func newClaudeCmd() *cobra.Command {
 				Name:         "agentbridge",
 				Version:      version,
 				Instructions: claudeInstructions,
+				DeliveryMode: resolveClaudeDeliveryMode(cfg),
 				ReplyHandler: func(ctx context.Context, msg protocol.BridgeMessage, requireReply bool) mcp.ReplyResult {
 					if bridgeDisabled.Load() {
 						return mcp.ReplyResult{Success: false, Error: "AgentBridge is disabled by agentbridge kill. Restart with agentbridge codex to reconnect."}
@@ -84,35 +88,42 @@ func newClaudeCmd() *cobra.Command {
 				},
 			})
 
-			go func() {
-				ticker := time.NewTicker(5 * time.Second)
-				defer ticker.Stop()
-				for {
-					select {
-					case <-ctx.Done():
-						return
-					case <-ticker.C:
-						if lc.WasKilled() || !bridgeDisabled.Load() || reconnectRunning.Load() {
-							continue
+			startReconnect := func() {
+				reconnectRunning.Store(true)
+				go func() { defer reconnectRunning.Store(false); _ = cc.RunWithReconnect(ctx) }()
+			}
+
+			startRecoveryPoller := func() {
+				go func() {
+					ticker := time.NewTicker(5 * time.Second)
+					defer ticker.Stop()
+					for {
+						select {
+						case <-ctx.Done():
+							return
+						case <-ticker.C:
+							if lc.WasKilled() || !bridgeDisabled.Load() || reconnectRunning.Load() {
+								continue
+							}
+							recoveryCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
+							healthy := lc.IsHealthy(recoveryCtx)
+							cancel()
+							if !healthy {
+								continue
+							}
+							bridgeDisabled.Store(false)
+							pushSystem("system_bridge_recovered", "✅ AgentBridge daemon reconnected after the killed sentinel was cleared.")
+							startReconnect()
 						}
-						recoveryCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
-						healthy := lc.IsHealthy(recoveryCtx)
-						cancel()
-						if !healthy {
-							continue
-						}
-						bridgeDisabled.Store(false)
-						pushSystem("system_bridge_recovered", "✅ AgentBridge daemon reconnected after the killed sentinel was cleared.")
-						reconnectRunning.Store(true)
-						go func() { defer reconnectRunning.Store(false); _ = cc.RunWithReconnect(ctx) }()
 					}
-				}
-			}()
+				}()
+			}
 
 			if lc.WasKilled() {
 				bridgeDisabled.Store(true)
 				go func() {
-					time.Sleep(100 * time.Millisecond)
+					<-srv.Ready()
+					startRecoveryPoller()
 					pushSystem("system_bridge_disabled", "⛔ AgentBridge was stopped by agentbridge kill. Bridge is staying idle until you restart with agentbridge codex.")
 				}()
 				return srv.Serve(ctx, os.Stdin, os.Stdout)
@@ -123,10 +134,36 @@ func newClaudeCmd() *cobra.Command {
 			if err := lc.EnsureRunning(startCtx); err != nil {
 				return err
 			}
-			reconnectRunning.Store(true)
-			go func() { defer reconnectRunning.Store(false); _ = cc.RunWithReconnect(ctx) }()
+			go func() {
+				<-srv.Ready()
+				startRecoveryPoller()
+				startReconnect()
+			}()
 
 			return srv.Serve(ctx, os.Stdin, os.Stdout)
 		},
+	}
+}
+
+func resolveClaudeDeliveryMode(cfg config.Config) mcp.DeliveryMode {
+	if mode, ok := parseDeliveryMode(os.Getenv("AGENTBRIDGE_MODE")); ok {
+		return mode
+	}
+	if agent, ok := cfg.Agents["claude"]; ok {
+		if mode, ok := parseDeliveryMode(agent.Mode); ok {
+			return mode
+		}
+	}
+	return mcp.DeliveryPush
+}
+
+func parseDeliveryMode(raw string) (mcp.DeliveryMode, bool) {
+	switch strings.ToLower(strings.TrimSpace(raw)) {
+	case string(mcp.DeliveryPush):
+		return mcp.DeliveryPush, true
+	case string(mcp.DeliveryPull):
+		return mcp.DeliveryPull, true
+	default:
+		return "", false
 	}
 }
