@@ -145,15 +145,18 @@ func (c *Client) HandleIncoming(raw []byte) {
 	if err := json.Unmarshal(raw, &env); err != nil {
 		return
 	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.closed {
+		return
+	}
 	switch env.Kind() {
 	case protocol.KindResponse:
 		key, ok := NormalizeID(env.ID)
 		if !ok {
 			return
 		}
-		c.mu.Lock()
 		ch, exists := c.pending[key]
-		c.mu.Unlock()
 		if exists {
 			select {
 			case ch <- &env:
@@ -184,10 +187,14 @@ func (c *Client) Close() error {
 	for _, ch := range c.pending {
 		close(ch)
 	}
+	notifications := c.notifications
+	serverRequests := c.serverRequests
 	c.pending = nil
+	c.notifications = nil
+	c.serverRequests = nil
 	c.mu.Unlock()
-	close(c.notifications)
-	close(c.serverRequests)
+	close(notifications)
+	close(serverRequests)
 	return c.writer.Close()
 }
 

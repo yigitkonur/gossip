@@ -133,14 +133,19 @@ func (c *Client) watchProcessExit() {
 		return
 	}
 	<-done
+	threadID := c.ActiveThreadID()
 	if c.dialer != nil {
 		_ = c.dialer.Close()
 	}
+	c.threadID.Store("")
 	c.turnMu.Lock()
 	c.activeTurnIDs = make(map[string]struct{})
 	c.turnMu.Unlock()
+	c.agentMessageMu.Lock()
+	c.agentMessageBufs = make(map[string]*strings.Builder)
+	c.agentMessageMu.Unlock()
 	c.turnInProgress.Store(false)
-	c.emit(Event{Kind: EventProcessExit, ThreadID: c.ActiveThreadID()})
+	c.emit(Event{Kind: EventProcessExit, ThreadID: threadID})
 }
 
 func (c *Client) Stop(ctx context.Context) error {

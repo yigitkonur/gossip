@@ -2,7 +2,9 @@ package codex
 
 import (
 	"encoding/json"
+	"strings"
 	"testing"
+	"time"
 
 	"github.com/raysonmeng/agent-bridge/internal/jsonrpc"
 	"github.com/raysonmeng/agent-bridge/internal/protocol"
@@ -92,5 +94,45 @@ func TestClient_TurnInProgress_TracksNestedTurns(t *testing.T) {
 	c.dispatchNotification(jsonrpc.Notification{Method: protocol.MethodTurnCompleted, Params: completed2})
 	if c.TurnInProgress() {
 		t.Fatal("turn should not be in progress after all nested turns complete")
+	}
+}
+
+
+func TestClient_WatchProcessExit_ClearsReadinessState(t *testing.T) {
+	c := NewClient(ClientOptions{})
+	c.threadID.Store("thread_1")
+	c.turnInProgress.Store(true)
+	c.turnMu.Lock()
+	c.activeTurnIDs["turn_1"] = struct{}{}
+	c.turnMu.Unlock()
+	c.agentMessageMu.Lock()
+	c.agentMessageBufs["turn_1_item_1"] = &strings.Builder{}
+	c.agentMessageBufs["turn_1_item_1"].WriteString("partial")
+	c.agentMessageMu.Unlock()
+	c.proc = &Process{done: make(chan struct{})}
+
+	done := make(chan struct{})
+	go func() {
+		c.watchProcessExit()
+		close(done)
+	}()
+	close(c.proc.done)
+
+	select {
+	case <-done:
+	case <-time.After(time.Second):
+		t.Fatal("watchProcessExit did not return")
+	}
+
+	if got := c.ActiveThreadID(); got != "" {
+		t.Fatalf("ActiveThreadID() = %q, want empty", got)
+	}
+	if c.TurnInProgress() {
+		t.Fatal("TurnInProgress() should be false after process exit")
+	}
+	c.agentMessageMu.Lock()
+	defer c.agentMessageMu.Unlock()
+	if len(c.agentMessageBufs) != 0 {
+		t.Fatalf("agent message buffers were not cleared: %+v", c.agentMessageBufs)
 	}
 }

@@ -18,6 +18,7 @@ type testHandler struct {
 	connects    int
 	disconnects []string
 	replies     []protocol.BridgeMessage
+	status      Status
 }
 
 func (h *testHandler) OnClaudeConnect() { h.mu.Lock(); h.connects++; h.mu.Unlock() }
@@ -32,10 +33,10 @@ func (h *testHandler) OnClaudeToCodex(_ context.Context, msg protocol.BridgeMess
 	h.replies = append(h.replies, msg)
 	return true, ""
 }
-func (h *testHandler) Snapshot() Status { return Status{BridgeReady: true} }
+func (h *testHandler) Snapshot() Status { return h.status }
 
 func TestServer_BuffersBroadcastUntilAttach(t *testing.T) {
-	h := &testHandler{}
+	h := &testHandler{status: Status{BridgeReady: true}}
 	s := NewServer(h)
 	s.Broadcast(context.Background(), protocol.BridgeMessage{ID: "m1", Source: protocol.SourceCodex, Content: "hello"})
 
@@ -77,7 +78,7 @@ func TestServer_BuffersBroadcastUntilAttach(t *testing.T) {
 }
 
 func TestServer_OlderAttachedBridgeCannotSendAfterReplacement(t *testing.T) {
-	h := &testHandler{}
+	h := &testHandler{status: Status{BridgeReady: true}}
 	s := NewServer(h)
 	srv := httptest.NewServer(s.HTTPHandler())
 	defer srv.Close()
@@ -102,6 +103,16 @@ func TestServer_OlderAttachedBridgeCannotSendAfterReplacement(t *testing.T) {
 	if err := conn2.Write(ctx, websocket.MessageText, []byte(`{"type":"claude_connect"}`)); err != nil {
 		t.Fatalf("attach2: %v", err)
 	}
+
+	closeCtx, closeCancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer closeCancel()
+	for {
+		_, _, err := conn1.Read(closeCtx)
+		if err != nil {
+			break
+		}
+	}
+
 	_ = conn1.Write(ctx, websocket.MessageText, []byte(`{"type":"claude_to_codex","requestId":"r1","message":{"id":"x","source":"claude","content":"old","timestamp":1}}`))
 
 	time.Sleep(200 * time.Millisecond)
@@ -109,5 +120,22 @@ func TestServer_OlderAttachedBridgeCannotSendAfterReplacement(t *testing.T) {
 	defer h.mu.Unlock()
 	if len(h.replies) != 0 {
 		t.Fatalf("stale attached bridge unexpectedly reached handler: %+v", h.replies)
+	}
+}
+
+
+func TestServer_HandleReady_SetsContentTypeOn503(t *testing.T) {
+	h := &testHandler{status: Status{BridgeReady: false}}
+	s := NewServer(h)
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest("GET", "/readyz", nil)
+
+	s.HTTPHandler().ServeHTTP(rec, req)
+
+	if rec.Code != 503 {
+		t.Fatalf("status = %d, want 503", rec.Code)
+	}
+	if got := rec.Header().Get("Content-Type"); got != "application/json" {
+		t.Fatalf("Content-Type = %q, want application/json", got)
 	}
 }

@@ -123,3 +123,22 @@ func TestClient_Call_UsesNegativeIDs(t *testing.T) {
 		t.Fatalf("Call returned error: %v", err)
 	}
 }
+
+
+func TestClient_HandleIncomingAfterClose_DoesNotPanic(t *testing.T) {
+	lb := newLoopback()
+	c := NewClient(lb)
+	if err := c.Close(); err != nil {
+		t.Fatalf("Close() returned error: %v", err)
+	}
+
+	defer func() {
+		if r := recover(); r != nil {
+			t.Fatalf("HandleIncoming panicked after Close: %v", r)
+		}
+	}()
+
+	c.HandleIncoming([]byte(`{"jsonrpc":"2.0","method":"item/permissions/requestApproval","id":1,"params":{}}`))
+	c.HandleIncoming([]byte(`{"jsonrpc":"2.0","method":"notifications/initialized","params":{}}`))
+	c.HandleIncoming([]byte(`{"jsonrpc":"2.0","id":-1,"result":{}}`))
+}

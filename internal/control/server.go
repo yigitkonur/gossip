@@ -96,10 +96,10 @@ func (s *Server) handleHealth(w http.ResponseWriter, _ *http.Request) {
 
 func (s *Server) handleReady(w http.ResponseWriter, _ *http.Request) {
 	status := s.handler.Snapshot()
+	w.Header().Set("Content-Type", "application/json")
 	if status.ThreadID == "" {
 		w.WriteHeader(http.StatusServiceUnavailable)
 	}
-	w.Header().Set("Content-Type", "application/json")
 	_ = json.NewEncoder(w).Encode(status)
 }
 
