@@ -22,7 +22,6 @@ const CONTROL_WS_URL = daemonLifecycle.controlWsUrl;
 const claude = new ClaudeAdapter();
 const daemonClient = new DaemonClient(CONTROL_WS_URL, {
   logFile: stateDir.logFile,
-  verbose: VERBOSE,
 });
 
 let shuttingDown = false;
@@ -200,9 +199,9 @@ function reconnectToDaemon(): Promise<void> {
           return;
         } catch (err: any) {
           // Continue retrying with exponential backoff until shutdown or killed sentinel.
-          if (VERBOSE) {
-            log(`[VERBOSE] Reconnect attempt ${attempt + 1} failed: ${err?.message ?? "unknown"}`);
-          }
+          // One line per attempt is worth keeping even when verbose is off — the
+          // user-facing notification is throttled to 30s and hides the actual cause.
+          log(`Reconnect attempt ${attempt + 1} failed: ${err?.message ?? "unknown"}`);
         }
       }
     } finally {

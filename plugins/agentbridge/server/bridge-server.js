@@ -13920,13 +13920,11 @@ class DaemonClient extends EventEmitter2 {
   wsId = 0;
   nextRequestId = 1;
   logFile;
-  verbose;
   pendingReplies = new Map;
   constructor(url, options = {}) {
     super();
     this.url = url;
     this.logFile = options.logFile;
-    this.verbose = options.verbose ?? false;
   }
   async connect() {
     if (this.ws?.readyState === WebSocket.OPEN) {
@@ -14522,8 +14520,7 @@ var daemonLifecycle = new DaemonLifecycle({ stateDir, controlPort: CONTROL_PORT,
 var CONTROL_WS_URL = daemonLifecycle.controlWsUrl;
 var claude = new ClaudeAdapter;
 var daemonClient = new DaemonClient(CONTROL_WS_URL, {
-  logFile: stateDir.logFile,
-  verbose: VERBOSE
+  logFile: stateDir.logFile
 });
 var shuttingDown = false;
 var daemonDisabled = false;
@@ -14650,9 +14647,7 @@ function reconnectToDaemon() {
           }
           return;
         } catch (err) {
-          if (VERBOSE) {
-            log(`[VERBOSE] Reconnect attempt ${attempt + 1} failed: ${err?.message ?? "unknown"}`);
-          }
+          log(`Reconnect attempt ${attempt + 1} failed: ${err?.message ?? "unknown"}`);
         }
       }
     } finally {

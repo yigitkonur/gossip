@@ -11,7 +11,6 @@ interface DaemonClientEvents {
 
 export interface DaemonClientOptions {
   logFile?: string;
-  verbose?: boolean;
 }
 
 let nextSocketId = 0;
@@ -21,7 +20,6 @@ export class DaemonClient extends EventEmitter<DaemonClientEvents> {
   private wsId: number = 0; // Track socket identity for debugging
   private nextRequestId = 1;
   private readonly logFile?: string;
-  private readonly verbose: boolean;
   private pendingReplies = new Map<
     string,
     {
@@ -33,7 +31,6 @@ export class DaemonClient extends EventEmitter<DaemonClientEvents> {
   constructor(private readonly url: string, options: DaemonClientOptions = {}) {
     super();
     this.logFile = options.logFile;
-    this.verbose = options.verbose ?? false;
   }
 
   async connect() {

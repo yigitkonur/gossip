@@ -79,7 +79,6 @@ class CodexAdapter extends EventEmitter {
   intentionalDisconnect = false;
   logFilePath;
   verbose;
-  appServerConnectedAt = null;
   constructor(appPortOrOpts = 4500, proxyPort = 4501) {
     super();
     if (typeof appPortOrOpts === "object") {
@@ -191,9 +190,10 @@ class CodexAdapter extends EventEmitter {
   connectToAppServer(isReconnect = false) {
     return new Promise((resolve, reject) => {
       const appWs = new WebSocket(this.appServerUrl);
+      let openedAt = 0;
       appWs.onopen = () => {
         this.appServerWs = appWs;
-        this.appServerConnectedAt = Date.now();
+        openedAt = Date.now();
         this.intentionalDisconnect = false;
         this.reconnectAttempts = 0;
         this.log(isReconnect ? "Reconnected to app-server" : "Connected to app-server (persistent)");
@@ -221,9 +221,11 @@ class CodexAdapter extends EventEmitter {
           reject(new Error(`Failed to connect to app-server: ${errDetail}`));
       };
       appWs.onclose = (event) => {
-        const duration = this.appServerConnectedAt ? `${((Date.now() - this.appServerConnectedAt) / 1000).toFixed(1)}s` : "n/a";
-        this.appServerConnectedAt = null;
-        this.log(`App-server WS closed (code=${event.code}, reason=${event.reason || "none"}, clean=${event.wasClean}, uptime=${duration}, intentional=${this.intentionalDisconnect})`);
+        const isCurrent = this.appServerWs === appWs;
+        const duration = openedAt > 0 ? `${((Date.now() - openedAt) / 1000).toFixed(1)}s` : "n/a";
+        this.log(`App-server WS closed (code=${event.code}, reason=${event.reason || "none"}, clean=${event.wasClean}, uptime=${duration}, intentional=${this.intentionalDisconnect}, isCurrent=${isCurrent})`);
+        if (!isCurrent)
+          return;
         this.appServerWs = null;
         this.clearResponseTrackingState();
         this.activeTurnIds.clear();
@@ -1580,18 +1582,14 @@ function startControlServer() {
         ws.data.clientId = ++nextControlClientId;
         controlSocketOpenedAt.set(ws, Date.now());
         log(`Frontend socket opened (#${ws.data.clientId})`);
-        if (VERBOSE) {
-          vlog(`Frontend socket open details (#${ws.data.clientId}): readyState=${ws.readyState}, remoteAddress=${ws.remoteAddress ?? "n/a"}, currentAttached=${attachedClaude?.data.clientId ?? "none"}`);
-        }
+        vlog(`Frontend socket open details (#${ws.data.clientId}): readyState=${ws.readyState}, remoteAddress=${ws.remoteAddress ?? "n/a"}, currentAttached=${attachedClaude?.data.clientId ?? "none"}`);
       },
       close: (ws, code, reason) => {
         const openedAt = controlSocketOpenedAt.get(ws);
         controlSocketOpenedAt.delete(ws);
         const duration = openedAt ? `${((Date.now() - openedAt) / 1000).toFixed(1)}s` : "n/a";
         log(`Frontend socket closed (#${ws.data.clientId}, code=${code}, reason=${reason || "none"}, uptime=${duration}, wasAttached=${attachedClaude === ws})`);
-        if (VERBOSE) {
-          vlog(`Close context (#${ws.data.clientId}): shuttingDown=${shuttingDown}, codexBootstrapped=${codexBootstrapped}, bufferedMessages=${bufferedMessages.length}, tui=${tuiConnectionState.snapshot().tuiConnected}`);
-        }
+        vlog(`Close context (#${ws.data.clientId}): shuttingDown=${shuttingDown}, codexBootstrapped=${codexBootstrapped}, bufferedMessages=${bufferedMessages.length}, tui=${tuiConnectionState.snapshot().tuiConnected}`);
         if (attachedClaude === ws) {
           detachClaude(ws, `frontend socket closed (code=${code}, reason=${reason || "none"})`);
         }
@@ -1899,10 +1897,8 @@ async function bootCodex() {
   log(`Codex app-server: ${codex.appServerUrl}`);
   log(`Codex proxy: ${codex.proxyUrl}`);
   log(`Control server: ws://127.0.0.1:${CONTROL_PORT}/ws`);
-  if (VERBOSE) {
-    vlog(`Env: pid=${process.pid}, node/bun=${process.versions.bun ?? process.version}, platform=${process.platform}`);
-    vlog(`Config: idleShutdownMs=${IDLE_SHUTDOWN_MS}, attentionWindowMs=${ATTENTION_WINDOW_MS}, filterMode=${FILTER_MODE}`);
-  }
+  vlog(`Env: pid=${process.pid}, node/bun=${process.versions.bun ?? process.version}, platform=${process.platform}`);
+  vlog(`Config: idleShutdownMs=${IDLE_SHUTDOWN_MS}, attentionWindowMs=${ATTENTION_WINDOW_MS}, filterMode=${FILTER_MODE}`);
   try {
     await codex.start();
     codexBootstrapped = true;
@@ -1960,7 +1956,10 @@ function vlog(msg) {
   process.stderr.write(line);
   try {
     appendFileSync2(stateDir.logFile, line);
-  } catch {}
+  } catch (err) {
+    process.stderr.write(`[${new Date().toISOString()}] [AgentBridgeDaemon] WARN: vlog write failed: ${err?.message}
+`);
+  }
 }
 if (daemonLifecycle.wasKilled()) {
   log("Killed sentinel found \u2014 daemon was intentionally stopped. Exiting immediately.");

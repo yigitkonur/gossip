@@ -253,11 +253,9 @@ function startControlServer() {
         ws.data.clientId = ++nextControlClientId;
         controlSocketOpenedAt.set(ws, Date.now());
         log(`Frontend socket opened (#${ws.data.clientId})`);
-        if (VERBOSE) {
-          vlog(
-            `Frontend socket open details (#${ws.data.clientId}): readyState=${ws.readyState}, remoteAddress=${ws.remoteAddress ?? "n/a"}, currentAttached=${attachedClaude?.data.clientId ?? "none"}`,
-          );
-        }
+        vlog(
+          `Frontend socket open details (#${ws.data.clientId}): readyState=${ws.readyState}, remoteAddress=${ws.remoteAddress ?? "n/a"}, currentAttached=${attachedClaude?.data.clientId ?? "none"}`,
+        );
       },
       close: (ws: ServerWebSocket<ControlSocketData>, code: number, reason: string) => {
         const openedAt = controlSocketOpenedAt.get(ws);
@@ -266,11 +264,9 @@ function startControlServer() {
         log(
           `Frontend socket closed (#${ws.data.clientId}, code=${code}, reason=${reason || "none"}, uptime=${duration}, wasAttached=${attachedClaude === ws})`,
         );
-        if (VERBOSE) {
-          vlog(
-            `Close context (#${ws.data.clientId}): shuttingDown=${shuttingDown}, codexBootstrapped=${codexBootstrapped}, bufferedMessages=${bufferedMessages.length}, tui=${tuiConnectionState.snapshot().tuiConnected}`,
-          );
-        }
+        vlog(
+          `Close context (#${ws.data.clientId}): shuttingDown=${shuttingDown}, codexBootstrapped=${codexBootstrapped}, bufferedMessages=${bufferedMessages.length}, tui=${tuiConnectionState.snapshot().tuiConnected}`,
+        );
         if (attachedClaude === ws) {
           detachClaude(ws, `frontend socket closed (code=${code}, reason=${reason || "none"})`);
         }
@@ -629,10 +625,8 @@ async function bootCodex() {
   log(`Codex app-server: ${codex.appServerUrl}`);
   log(`Codex proxy: ${codex.proxyUrl}`);
   log(`Control server: ws://127.0.0.1:${CONTROL_PORT}/ws`);
-  if (VERBOSE) {
-    vlog(`Env: pid=${process.pid}, node/bun=${process.versions.bun ?? process.version}, platform=${process.platform}`);
-    vlog(`Config: idleShutdownMs=${IDLE_SHUTDOWN_MS}, attentionWindowMs=${ATTENTION_WINDOW_MS}, filterMode=${FILTER_MODE}`);
-  }
+  vlog(`Env: pid=${process.pid}, node/bun=${process.versions.bun ?? process.version}, platform=${process.platform}`);
+  vlog(`Config: idleShutdownMs=${IDLE_SHUTDOWN_MS}, attentionWindowMs=${ATTENTION_WINDOW_MS}, filterMode=${FILTER_MODE}`);
 
   try {
     await codex.start();
@@ -693,7 +687,9 @@ function vlog(msg: string) {
   process.stderr.write(line);
   try {
     appendFileSync(stateDir.logFile, line);
-  } catch {}
+  } catch (err: any) {
+    process.stderr.write(`[${new Date().toISOString()}] [AgentBridgeDaemon] WARN: vlog write failed: ${err?.message}\n`);
+  }
 }
 
 // Refuse to start if user intentionally killed the daemon.

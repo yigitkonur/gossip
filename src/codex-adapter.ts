@@ -83,7 +83,6 @@ export class CodexAdapter extends EventEmitter {
   private intentionalDisconnect = false;
   private readonly logFilePath: string;
   private readonly verbose: boolean;
-  private appServerConnectedAt: number | null = null;
 
   constructor(appPort?: number, proxyPort?: number);
   constructor(opts: CodexAdapterOptions);
@@ -216,10 +215,14 @@ export class CodexAdapter extends EventEmitter {
   private connectToAppServer(isReconnect = false): Promise<void> {
     return new Promise((resolve, reject) => {
       const appWs = new WebSocket(this.appServerUrl);
+      // Per-socket open timestamp captured via closure so a stale socket's
+      // onclose can't read a newer socket's open time (same race fixed in
+      // DaemonClient via the openedAt closure parameter).
+      let openedAt = 0;
 
       appWs.onopen = () => {
         this.appServerWs = appWs;
-        this.appServerConnectedAt = Date.now();
+        openedAt = Date.now();
         this.intentionalDisconnect = false;
         this.reconnectAttempts = 0;
         this.log(isReconnect ? "Reconnected to app-server" : "Connected to app-server (persistent)");
@@ -249,11 +252,15 @@ export class CodexAdapter extends EventEmitter {
       };
 
       appWs.onclose = (event: CloseEvent) => {
-        const duration = this.appServerConnectedAt ? `${((Date.now() - this.appServerConnectedAt) / 1000).toFixed(1)}s` : "n/a";
-        this.appServerConnectedAt = null;
+        const isCurrent = this.appServerWs === appWs;
+        const duration = openedAt > 0 ? `${((Date.now() - openedAt) / 1000).toFixed(1)}s` : "n/a";
         this.log(
-          `App-server WS closed (code=${event.code}, reason=${event.reason || "none"}, clean=${event.wasClean}, uptime=${duration}, intentional=${this.intentionalDisconnect})`,
+          `App-server WS closed (code=${event.code}, reason=${event.reason || "none"}, clean=${event.wasClean}, uptime=${duration}, intentional=${this.intentionalDisconnect}, isCurrent=${isCurrent})`,
         );
+        // Only mutate shared state for the socket that is still the current
+        // one, so a late-firing stale onclose can't tear down a newer
+        // successful connection or trigger a spurious reconnect.
+        if (!isCurrent) return;
         this.appServerWs = null;
         this.clearResponseTrackingState();
         this.activeTurnIds.clear();
