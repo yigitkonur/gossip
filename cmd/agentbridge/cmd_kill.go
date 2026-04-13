@@ -35,7 +35,7 @@ func newKillCmd() *cobra.Command {
 						}
 						time.Sleep(200 * time.Millisecond)
 					}
-					if daemon.IsProcessAlive(pid) {
+					if daemon.IsProcessAlive(pid) && isManagedCodexProcess(pid) {
 						_ = syscall.Kill(pid, syscall.SIGKILL)
 					}
 				}

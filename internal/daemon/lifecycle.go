@@ -190,7 +190,9 @@ func (l *Lifecycle) Kill(gracefulTimeout time.Duration) (bool, error) {
 		}
 		time.Sleep(200 * time.Millisecond)
 	}
-	_ = syscall.Kill(pid, syscall.SIGKILL)
+	if l.isDaemonProcess(pid) {
+		_ = syscall.Kill(pid, syscall.SIGKILL)
+	}
 	l.cleanup()
 	return true, nil
 }
@@ -225,7 +227,7 @@ func (l *Lifecycle) acquireLock() bool {
 		return false
 	}
 	pid, convErr := strconv.Atoi(string(bytesTrimSpace(b)))
-	if convErr != nil || !IsProcessAlive(pid) {
+	if convErr != nil || !IsProcessAlive(pid) || !isAgentBridgeProcess(pid) {
 		l.releaseLock()
 		f, err = os.OpenFile(l.opts.StateDir.LockFile(), os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0o644)
 		if err != nil {
@@ -265,4 +267,13 @@ func bytesTrimSpace(b []byte) []byte {
 		end--
 	}
 	return b[start:end]
+}
+
+func isAgentBridgeProcess(pid int) bool {
+	out, err := exec.Command("ps", "-p", strconv.Itoa(pid), "-o", "command=").Output()
+	if err != nil {
+		return false
+	}
+	cmd := string(bytesTrimSpace(out))
+	return strings.Contains(cmd, "agentbridge") || strings.Contains(cmd, "agent_bridge")
 }
