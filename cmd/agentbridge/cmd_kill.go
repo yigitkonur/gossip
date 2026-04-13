@@ -60,6 +60,51 @@ func isManagedCodexProcess(pid int) bool {
 	if err != nil {
 		return false
 	}
-	cmd := strings.TrimSpace(string(out))
-	return strings.Contains(cmd, "codex") && strings.Contains(cmd, "tui_app_server")
+	return isManagedCodexCommand(strings.TrimSpace(string(out)))
+}
+
+func isManagedCodexCommand(cmd string) bool {
+	if cmd == "" {
+		return false
+	}
+	args := strings.Fields(cmd)
+	if len(args) == 0 {
+		return false
+	}
+	return isCodexExecutable(args[0]) && hasFlagValue(args, "--enable", "tui_app_server") && hasFlagWithValue(args, "--remote")
+}
+
+func isCodexExecutable(arg string) bool {
+	arg = strings.TrimSpace(arg)
+	if arg == "" {
+		return false
+	}
+	if i := strings.LastIndex(arg, "/"); i >= 0 {
+		arg = arg[i+1:]
+	}
+	return arg == "codex"
+}
+
+func hasFlagValue(args []string, flag, value string) bool {
+	for i := 0; i < len(args); i++ {
+		if args[i] == flag && i+1 < len(args) && args[i+1] == value {
+			return true
+		}
+		if strings.HasPrefix(args[i], flag+"=") && strings.TrimPrefix(args[i], flag+"=") == value {
+			return true
+		}
+	}
+	return false
+}
+
+func hasFlagWithValue(args []string, flag string) bool {
+	for i := 0; i < len(args); i++ {
+		if args[i] == flag && i+1 < len(args) && strings.TrimSpace(args[i+1]) != "" {
+			return true
+		}
+		if strings.HasPrefix(args[i], flag+"=") && strings.TrimSpace(strings.TrimPrefix(args[i], flag+"=")) != "" {
+			return true
+		}
+	}
+	return false
 }

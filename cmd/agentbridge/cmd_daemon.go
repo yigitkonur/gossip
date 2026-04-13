@@ -25,6 +25,17 @@ func daemonOptionsFromConfig(sd *statedir.StateDir, cfg config.Config) daemon.Op
 	}
 }
 
+type stateDirEnsurer interface { Ensure() error }
+
+type pidFileWriter interface { WritePid() error }
+
+func ensureDaemonState(sd stateDirEnsurer, lc pidFileWriter) error {
+	if err := sd.Ensure(); err != nil {
+		return err
+	}
+	return lc.WritePid()
+}
+
 func newDaemonCmd() *cobra.Command {
 	return &cobra.Command{
 		Use:    "daemon",
@@ -32,13 +43,14 @@ func newDaemonCmd() *cobra.Command {
 		Hidden: true,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			sd := statedir.New("")
-			_ = sd.Ensure()
 			cfg := config.NewService("").LoadOrDefault()
 			lc := daemon.NewLifecycle(daemon.LifecycleOptions{StateDir: sd, ControlPort: controlPort(), Logger: logToStderr})
 			if lc.WasKilled() {
 				return nil
 			}
-			_ = lc.WritePid()
+			if err := ensureDaemonState(sd, lc); err != nil {
+				return err
+			}
 			defer lc.RemovePid()
 
 			ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)

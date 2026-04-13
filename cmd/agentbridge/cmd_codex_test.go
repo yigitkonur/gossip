@@ -88,3 +88,13 @@ func TestNormalizeCodexArgs_ReportsHelp(t *testing.T) {
 		}
 	}
 }
+
+func TestNormalizeCodexArgs_RejectsOwnedFlagsAfterLeadingSeparator(t *testing.T) {
+	_, err := normalizeCodexArgs([]string{"--", "--remote", "ws://127.0.0.1:7777"})
+	if err == nil {
+		t.Fatal("expected error")
+	}
+	if !strings.Contains(err.Error(), `"--remote" is automatically set by agentbridge codex`) {
+		t.Fatalf("error %q does not contain owned-flag rejection", err.Error())
+	}
+}

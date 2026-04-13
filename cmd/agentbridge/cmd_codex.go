@@ -92,11 +92,12 @@ func waitForProxyReady(ctx context.Context, proxyURL string) error {
 func logToStderr(msg string) { fmt.Fprintln(os.Stderr, msg) }
 
 func normalizeCodexArgs(args []string) (codexArgsResult, error) {
+	explicitPassthrough := false
 	if len(args) > 0 && args[0] == "--" {
 		args = args[1:]
-		return codexArgsResult{Args: append([]string(nil), args...)}, nil
+		explicitPassthrough = true
 	}
-	if len(args) == 1 && (args[0] == "--help" || args[0] == "-h") {
+	if !explicitPassthrough && len(args) == 1 && (args[0] == "--help" || args[0] == "-h") {
 		return codexArgsResult{ShowHelp: true}, nil
 	}
 
