@@ -135,14 +135,6 @@ func (s *Server) handleInitialize(req Request) {
 	s.respond(req.ID, result)
 }
 
-func (s *Server) handleToolsList(req Request) {
-	s.respond(req.ID, ToolListResult{Tools: nil})
-}
-
-func (s *Server) handleToolsCall(_ context.Context, req Request) {
-	s.respondError(req.ID, -32601, "unknown tool")
-}
-
 func (s *Server) respond(id json.RawMessage, result any) {
 	s.write(Response{JSONRPC: "2.0", ID: id, Result: result})
 }
