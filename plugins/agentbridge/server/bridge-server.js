@@ -5,43 +5,25 @@ var __getProtoOf = Object.getPrototypeOf;
 var __defProp = Object.defineProperty;
 var __getOwnPropNames = Object.getOwnPropertyNames;
 var __hasOwnProp = Object.prototype.hasOwnProperty;
-function __accessProp(key) {
-  return this[key];
-}
-var __toESMCache_node;
-var __toESMCache_esm;
 var __toESM = (mod, isNodeMode, target) => {
-  var canCache = mod != null && typeof mod === "object";
-  if (canCache) {
-    var cache = isNodeMode ? __toESMCache_node ??= new WeakMap : __toESMCache_esm ??= new WeakMap;
-    var cached = cache.get(mod);
-    if (cached)
-      return cached;
-  }
   target = mod != null ? __create(__getProtoOf(mod)) : {};
   const to = isNodeMode || !mod || !mod.__esModule ? __defProp(target, "default", { value: mod, enumerable: true }) : target;
   for (let key of __getOwnPropNames(mod))
     if (!__hasOwnProp.call(to, key))
       __defProp(to, key, {
-        get: __accessProp.bind(mod, key),
+        get: () => mod[key],
         enumerable: true
       });
-  if (canCache)
-    cache.set(mod, to);
   return to;
 };
 var __commonJS = (cb, mod) => () => (mod || cb((mod = { exports: {} }).exports, mod), mod.exports);
-var __returnValue = (v) => v;
-function __exportSetter(name, newValue) {
-  this[name] = __returnValue.bind(null, newValue);
-}
 var __export = (target, all) => {
   for (var name in all)
     __defProp(target, name, {
       get: all[name],
       enumerable: true,
       configurable: true,
-      set: __exportSetter.bind(all, name)
+      set: (newValue) => all[name] = () => newValue
     });
 };
 
@@ -6518,7 +6500,7 @@ var require_dist = __commonJS((exports, module) => {
 });
 
 // src/bridge.ts
-import { appendFileSync as appendFileSync2 } from "fs";
+import { appendFileSync as appendFileSync3 } from "fs";
 
 // node_modules/zod/v4/core/core.js
 var NEVER = Object.freeze({
@@ -13929,6 +13911,7 @@ ${formatted}`
 
 // src/daemon-client.ts
 import { EventEmitter as EventEmitter2 } from "events";
+import { appendFileSync as appendFileSync2 } from "fs";
 var nextSocketId = 0;
 
 class DaemonClient extends EventEmitter2 {
@@ -13936,10 +13919,15 @@ class DaemonClient extends EventEmitter2 {
   ws = null;
   wsId = 0;
   nextRequestId = 1;
+  connectedAt = null;
+  logFile;
+  verbose;
   pendingReplies = new Map;
-  constructor(url) {
+  constructor(url, options = {}) {
     super();
     this.url = url;
+    this.logFile = options.logFile;
+    this.verbose = options.verbose ?? false;
   }
   async connect() {
     if (this.ws?.readyState === WebSocket.OPEN) {
@@ -13951,32 +13939,46 @@ class DaemonClient extends EventEmitter2 {
       this.log(`connect() closing lingering ws#${this.wsId} (readyState=${state})`);
       try {
         this.ws.close();
-      } catch {}
+      } catch (err) {
+        this.log(`connect() error closing lingering ws#${this.wsId}: ${err?.message ?? "unknown"}`);
+      }
       this.ws = null;
     }
     const socketId = ++nextSocketId;
+    const attemptStart = Date.now();
     await new Promise((resolve, reject) => {
-      const ws = new WebSocket(this.url);
+      let ws;
+      try {
+        ws = new WebSocket(this.url);
+      } catch (err) {
+        this.log(`ws#${socketId} construction failed: ${err?.message ?? "unknown"} (url=${this.url})`);
+        reject(err);
+        return;
+      }
       let settled = false;
       ws.onopen = () => {
         settled = true;
         this.ws = ws;
         this.wsId = socketId;
+        this.connectedAt = Date.now();
         this.attachSocketHandlers(ws, socketId);
-        this.log(`ws#${socketId} opened and attached`);
+        this.log(`ws#${socketId} opened and attached (connect took ${Date.now() - attemptStart}ms)`);
         resolve();
       };
-      ws.onerror = () => {
+      ws.onerror = (event) => {
         if (settled)
           return;
         settled = true;
-        reject(new Error(`Failed to connect to AgentBridge daemon at ${this.url}`));
+        const errDetail = event.message ?? "unknown";
+        this.log(`ws#${socketId} connect onerror: ${errDetail} (url=${this.url}, elapsed=${Date.now() - attemptStart}ms)`);
+        reject(new Error(`Failed to connect to AgentBridge daemon at ${this.url}: ${errDetail}`));
       };
-      ws.onclose = () => {
+      ws.onclose = (event) => {
         if (settled)
           return;
         settled = true;
-        reject(new Error(`AgentBridge daemon closed the connection during startup (${this.url})`));
+        this.log(`ws#${socketId} closed during startup (code=${event.code}, reason=${event.reason || "none"}, clean=${event.wasClean}, elapsed=${Date.now() - attemptStart}ms)`);
+        reject(new Error(`AgentBridge daemon closed the connection during startup (${this.url}, code=${event.code})`));
       };
     });
   }
@@ -14043,14 +14045,20 @@ class DaemonClient extends EventEmitter2 {
     };
     ws.onclose = (event) => {
       const isCurrent = this.ws === ws;
-      this.log(`ws#${socketId} onclose (code=${event.code}, reason=${event.reason || "none"}, isCurrent=${isCurrent}, currentWsId=${this.wsId})`);
+      const uptimeMs = this.connectedAt ? Date.now() - this.connectedAt : 0;
+      const uptime = this.connectedAt ? `${(uptimeMs / 1000).toFixed(1)}s` : "n/a";
+      this.log(`ws#${socketId} onclose (code=${event.code}, reason=${event.reason || "none"}, clean=${event.wasClean}, uptime=${uptime}, isCurrent=${isCurrent}, currentWsId=${this.wsId}, pendingReplies=${this.pendingReplies.size})`);
       if (isCurrent) {
         this.ws = null;
+        this.connectedAt = null;
         this.rejectPendingReplies("AgentBridge daemon disconnected.");
-        this.emit("disconnect");
+        this.emit("disconnect", { code: event.code, reason: event.reason || "", uptimeMs });
       }
     };
-    ws.onerror = () => {};
+    ws.onerror = (event) => {
+      const errDetail = event.message ?? "unknown";
+      this.log(`ws#${socketId} onerror: ${errDetail} (readyState=${ws.readyState}, isCurrent=${this.ws === ws})`);
+    };
   }
   rejectPendingReplies(error2) {
     for (const [requestId, pending] of this.pendingReplies.entries()) {
@@ -14066,8 +14074,14 @@ class DaemonClient extends EventEmitter2 {
     this.ws.send(JSON.stringify(message));
   }
   log(msg) {
-    process.stderr.write(`[${new Date().toISOString()}] [DaemonClient] ${msg}
-`);
+    const line = `[${new Date().toISOString()}] [DaemonClient] ${msg}
+`;
+    process.stderr.write(line);
+    if (this.logFile) {
+      try {
+        appendFileSync2(this.logFile, line);
+      } catch {}
+    }
   }
 }
 
@@ -14501,13 +14515,18 @@ class ConfigService {
 
 // src/bridge.ts
 var stateDir = new StateDirResolver;
+stateDir.ensure();
 var configService = new ConfigService;
 var config2 = configService.loadOrDefault();
 var CONTROL_PORT = parseInt(process.env.AGENTBRIDGE_CONTROL_PORT ?? "4502", 10);
+var VERBOSE = !/^(0|false|no|off)$/i.test(process.env.AGENTBRIDGE_VERBOSE ?? "1");
 var daemonLifecycle = new DaemonLifecycle({ stateDir, controlPort: CONTROL_PORT, log });
 var CONTROL_WS_URL = daemonLifecycle.controlWsUrl;
 var claude = new ClaudeAdapter;
-var daemonClient = new DaemonClient(CONTROL_WS_URL);
+var daemonClient = new DaemonClient(CONTROL_WS_URL, {
+  logFile: stateDir.logFile,
+  verbose: VERBOSE
+});
 var shuttingDown = false;
 var daemonDisabled = false;
 var RECONNECT_NOTIFY_COOLDOWN_MS = 30000;
@@ -14535,14 +14554,19 @@ daemonClient.on("codexMessage", (message) => {
 daemonClient.on("status", (status) => {
   log(`Daemon status: ready=${status.bridgeReady} tui=${status.tuiConnected} thread=${status.threadId ?? "none"} queued=${status.queuedMessageCount}`);
 });
-daemonClient.on("disconnect", () => {
+daemonClient.on("disconnect", (info) => {
   if (shuttingDown || daemonDisabled)
     return;
-  log("Daemon control connection closed \u2014 will attempt to reconnect");
+  const uptime = info.uptimeMs > 0 ? `${(info.uptimeMs / 1000).toFixed(1)}s` : "n/a";
+  log(`Daemon control connection closed \u2014 will attempt to reconnect (code=${info.code}, reason=${info.reason || "none"}, uptime=${uptime})`);
+  if (VERBOSE) {
+    log(`[VERBOSE] Disconnect context: shuttingDown=${shuttingDown}, daemonDisabled=${daemonDisabled}, daemonHealthy=will-check-on-reconnect, controlUrl=${CONTROL_WS_URL}`);
+  }
   const now = Date.now();
   if (now - lastDisconnectNotifyTs >= RECONNECT_NOTIFY_COOLDOWN_MS) {
     lastDisconnectNotifyTs = now;
-    claude.pushNotification(systemMessage("system_daemon_disconnected", "\u26A0\uFE0F AgentBridge daemon control connection lost. Attempting to reconnect..."));
+    const notifyContent = info.code && info.code !== 1000 && info.code !== 1005 ? `\u26A0\uFE0F AgentBridge daemon control connection lost (code=${info.code}${info.reason ? `, reason=${info.reason}` : ""}, uptime=${uptime}). Attempting to reconnect...` : "\u26A0\uFE0F AgentBridge daemon control connection lost. Attempting to reconnect...";
+    claude.pushNotification(systemMessage("system_daemon_disconnected", notifyContent));
   } else {
     log("Suppressing duplicate disconnect notification (within cooldown)");
   }
@@ -14550,6 +14574,8 @@ daemonClient.on("disconnect", () => {
 });
 claude.on("ready", async () => {
   log(`MCP server ready (delivery mode: ${claude.getDeliveryMode()}) \u2014 ensuring AgentBridge daemon...`);
+  log(`Log file: ${stateDir.logFile}`);
+  log(`Verbose mode: ${VERBOSE ? "ON (default)" : "off (AGENTBRIDGE_VERBOSE=0)"}`);
   if (daemonLifecycle.wasKilled()) {
     await enterDisabledState("Killed sentinel found \u2014 bridge staying idle", "\u26D4 AgentBridge was stopped by `agentbridge kill`. Bridge is staying idle. Restart Claude Code (`agentbridge claude`), switch to a new conversation, or run `/resume` to reconnect.");
     return;
@@ -14625,7 +14651,11 @@ function reconnectToDaemon() {
             log("Suppressing duplicate reconnect notification (within cooldown)");
           }
           return;
-        } catch {}
+        } catch (err) {
+          if (VERBOSE) {
+            log(`[VERBOSE] Reconnect attempt ${attempt + 1} failed: ${err?.message ?? "unknown"}`);
+          }
+        }
       }
     } finally {
       reconnectTask = null;
@@ -14721,7 +14751,7 @@ function log(msg) {
 `;
   process.stderr.write(line);
   try {
-    appendFileSync2(stateDir.logFile, line);
+    appendFileSync3(stateDir.logFile, line);
   } catch {}
 }
 log(`Starting AgentBridge frontend (daemon ws ${CONTROL_WS_URL})`);

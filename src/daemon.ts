@@ -37,10 +37,20 @@ const FILTER_MODE: FilterMode =
   (process.env.AGENTBRIDGE_FILTER_MODE as FilterMode) === "full" ? "full" : "filtered";
 const IDLE_SHUTDOWN_MS = parseInt(process.env.AGENTBRIDGE_IDLE_SHUTDOWN_MS ?? String(config.idleShutdownSeconds * 1000), 10);
 const ATTENTION_WINDOW_MS = parseInt(process.env.AGENTBRIDGE_ATTENTION_WINDOW_MS ?? String(config.turnCoordination.attentionWindowSeconds * 1000), 10);
+// Verbose logging is ON by default. Set AGENTBRIDGE_VERBOSE=0 (or off/false/no) to disable.
+const VERBOSE = !/^(0|false|no|off)$/i.test(process.env.AGENTBRIDGE_VERBOSE ?? "1");
 
 const daemonLifecycle = new DaemonLifecycle({ stateDir, controlPort: CONTROL_PORT, log });
 
-const codex = new CodexAdapter(CODEX_APP_PORT, CODEX_PROXY_PORT);
+const codex = new CodexAdapter({
+  appPort: CODEX_APP_PORT,
+  proxyPort: CODEX_PROXY_PORT,
+  logFile: stateDir.logFile,
+  verbose: VERBOSE,
+});
+
+// Track control socket connection start times for duration-on-close diagnostics
+const controlSocketOpenedAt = new WeakMap<ServerWebSocket<ControlSocketData>, number>();
 const attachCmd = `codex --enable tui_app_server --remote ${codex.proxyUrl}`;
 
 let controlServer: ReturnType<typeof Bun.serve> | null = null;
@@ -241,12 +251,28 @@ function startControlServer() {
       sendPings: true,
       open: (ws: ServerWebSocket<ControlSocketData>) => {
         ws.data.clientId = ++nextControlClientId;
+        controlSocketOpenedAt.set(ws, Date.now());
         log(`Frontend socket opened (#${ws.data.clientId})`);
+        if (VERBOSE) {
+          vlog(
+            `Frontend socket open details (#${ws.data.clientId}): readyState=${ws.readyState}, remoteAddress=${ws.remoteAddress ?? "n/a"}, currentAttached=${attachedClaude?.data.clientId ?? "none"}`,
+          );
+        }
       },
       close: (ws: ServerWebSocket<ControlSocketData>, code: number, reason: string) => {
-        log(`Frontend socket closed (#${ws.data.clientId}, code=${code}, reason=${reason || "none"}, wasAttached=${attachedClaude === ws})`);
+        const openedAt = controlSocketOpenedAt.get(ws);
+        controlSocketOpenedAt.delete(ws);
+        const duration = openedAt ? `${((Date.now() - openedAt) / 1000).toFixed(1)}s` : "n/a";
+        log(
+          `Frontend socket closed (#${ws.data.clientId}, code=${code}, reason=${reason || "none"}, uptime=${duration}, wasAttached=${attachedClaude === ws})`,
+        );
+        if (VERBOSE) {
+          vlog(
+            `Close context (#${ws.data.clientId}): shuttingDown=${shuttingDown}, codexBootstrapped=${codexBootstrapped}, bufferedMessages=${bufferedMessages.length}, tui=${tuiConnectionState.snapshot().tuiConnected}`,
+          );
+        }
         if (attachedClaude === ws) {
-          detachClaude(ws, "frontend socket closed");
+          detachClaude(ws, `frontend socket closed (code=${code}, reason=${reason || "none"})`);
         }
       },
       message: (ws: ServerWebSocket<ControlSocketData>, raw) => {
@@ -598,9 +624,15 @@ function removeStatusFile() {
 
 async function bootCodex() {
   log("Starting AgentBridge daemon...");
+  log(`Log file: ${stateDir.logFile}`);
+  log(`Verbose mode: ${VERBOSE ? "ON (default)" : "off (AGENTBRIDGE_VERBOSE=0)"}`);
   log(`Codex app-server: ${codex.appServerUrl}`);
   log(`Codex proxy: ${codex.proxyUrl}`);
   log(`Control server: ws://127.0.0.1:${CONTROL_PORT}/ws`);
+  if (VERBOSE) {
+    vlog(`Env: pid=${process.pid}, node/bun=${process.versions.bun ?? process.version}, platform=${process.platform}`);
+    vlog(`Config: idleShutdownMs=${IDLE_SHUTDOWN_MS}, attentionWindowMs=${ATTENTION_WINDOW_MS}, filterMode=${FILTER_MODE}`);
+  }
 
   try {
     await codex.start();
@@ -647,6 +679,17 @@ process.on("unhandledRejection", (reason: any) => {
 
 function log(msg: string) {
   const line = `[${new Date().toISOString()}] [AgentBridgeDaemon] ${msg}\n`;
+  process.stderr.write(line);
+  try {
+    appendFileSync(stateDir.logFile, line);
+  } catch (err: any) {
+    process.stderr.write(`[${new Date().toISOString()}] [AgentBridgeDaemon] WARN: log write failed: ${err?.message}\n`);
+  }
+}
+
+function vlog(msg: string) {
+  if (!VERBOSE) return;
+  const line = `[${new Date().toISOString()}] [AgentBridgeDaemon:VERBOSE] ${msg}\n`;
   process.stderr.write(line);
   try {
     appendFileSync(stateDir.logFile, line);

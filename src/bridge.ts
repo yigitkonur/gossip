@@ -9,15 +9,21 @@ import { ConfigService } from "./config-service";
 import type { BridgeMessage } from "./types";
 
 const stateDir = new StateDirResolver();
+stateDir.ensure();
 const configService = new ConfigService();
 const config = configService.loadOrDefault();
 
 const CONTROL_PORT = parseInt(process.env.AGENTBRIDGE_CONTROL_PORT ?? "4502", 10);
+// Verbose logging is ON by default. Set AGENTBRIDGE_VERBOSE=0 (or off/false/no) to disable.
+const VERBOSE = !/^(0|false|no|off)$/i.test(process.env.AGENTBRIDGE_VERBOSE ?? "1");
 const daemonLifecycle = new DaemonLifecycle({ stateDir, controlPort: CONTROL_PORT, log });
 const CONTROL_WS_URL = daemonLifecycle.controlWsUrl;
 
 const claude = new ClaudeAdapter();
-const daemonClient = new DaemonClient(CONTROL_WS_URL);
+const daemonClient = new DaemonClient(CONTROL_WS_URL, {
+  logFile: stateDir.logFile,
+  verbose: VERBOSE,
+});
 
 let shuttingDown = false;
 let daemonDisabled = false;
@@ -56,18 +62,27 @@ daemonClient.on("status", (status) => {
   );
 });
 
-daemonClient.on("disconnect", () => {
+daemonClient.on("disconnect", (info) => {
   if (shuttingDown || daemonDisabled) return;
 
-  log("Daemon control connection closed — will attempt to reconnect");
+  const uptime = info.uptimeMs > 0 ? `${(info.uptimeMs / 1000).toFixed(1)}s` : "n/a";
+  log(
+    `Daemon control connection closed — will attempt to reconnect (code=${info.code}, reason=${info.reason || "none"}, uptime=${uptime})`,
+  );
+  if (VERBOSE) {
+    log(
+      `[VERBOSE] Disconnect context: shuttingDown=${shuttingDown}, daemonDisabled=${daemonDisabled}, daemonHealthy=will-check-on-reconnect, controlUrl=${CONTROL_WS_URL}`,
+    );
+  }
 
   const now = Date.now();
   if (now - lastDisconnectNotifyTs >= RECONNECT_NOTIFY_COOLDOWN_MS) {
     lastDisconnectNotifyTs = now;
-    void claude.pushNotification(systemMessage(
-      "system_daemon_disconnected",
-      "⚠️ AgentBridge daemon control connection lost. Attempting to reconnect...",
-    ));
+    const notifyContent =
+      info.code && info.code !== 1000 && info.code !== 1005
+        ? `⚠️ AgentBridge daemon control connection lost (code=${info.code}${info.reason ? `, reason=${info.reason}` : ""}, uptime=${uptime}). Attempting to reconnect...`
+        : "⚠️ AgentBridge daemon control connection lost. Attempting to reconnect...";
+    void claude.pushNotification(systemMessage("system_daemon_disconnected", notifyContent));
   } else {
     log("Suppressing duplicate disconnect notification (within cooldown)");
   }
@@ -76,6 +91,8 @@ daemonClient.on("disconnect", () => {
 
 claude.on("ready", async () => {
   log(`MCP server ready (delivery mode: ${claude.getDeliveryMode()}) — ensuring AgentBridge daemon...`);
+  log(`Log file: ${stateDir.logFile}`);
+  log(`Verbose mode: ${VERBOSE ? "ON (default)" : "off (AGENTBRIDGE_VERBOSE=0)"}`);
   if (daemonLifecycle.wasKilled()) {
     await enterDisabledState(
       "Killed sentinel found — bridge staying idle",
@@ -181,8 +198,11 @@ function reconnectToDaemon(): Promise<void> {
             log("Suppressing duplicate reconnect notification (within cooldown)");
           }
           return;
-        } catch {
+        } catch (err: any) {
           // Continue retrying with exponential backoff until shutdown or killed sentinel.
+          if (VERBOSE) {
+            log(`[VERBOSE] Reconnect attempt ${attempt + 1} failed: ${err?.message ?? "unknown"}`);
+          }
         }
       }
     } finally {

@@ -40,11 +40,16 @@ interface PendingServerRequest {
   timestamp: number;
 }
 
-const LOG_FILE = "/tmp/agentbridge.log";
-
 interface PendingRequest {
   method: AppServerTrackedRequestMethod;
   threadId?: string;
+}
+
+export interface CodexAdapterOptions {
+  appPort?: number;
+  proxyPort?: number;
+  logFile?: string;
+  verbose?: boolean;
 }
 
 export class CodexAdapter extends EventEmitter {
@@ -76,11 +81,25 @@ export class CodexAdapter extends EventEmitter {
   private staleProxyIds = new Map<number, ReturnType<typeof setTimeout>>();
   private bridgeRequestIds = new Map<number, ReturnType<typeof setTimeout>>();
   private intentionalDisconnect = false;
+  private readonly logFilePath: string;
+  private readonly verbose: boolean;
+  private appServerConnectedAt: number | null = null;
 
-  constructor(appPort = 4500, proxyPort = 4501) {
+  constructor(appPort?: number, proxyPort?: number);
+  constructor(opts: CodexAdapterOptions);
+  constructor(appPortOrOpts: number | CodexAdapterOptions = 4500, proxyPort = 4501) {
     super();
-    this.appPort = appPort;
-    this.proxyPort = proxyPort;
+    if (typeof appPortOrOpts === "object") {
+      this.appPort = appPortOrOpts.appPort ?? 4500;
+      this.proxyPort = appPortOrOpts.proxyPort ?? 4501;
+      this.logFilePath = appPortOrOpts.logFile ?? "/tmp/agentbridge.log";
+      this.verbose = appPortOrOpts.verbose ?? false;
+    } else {
+      this.appPort = appPortOrOpts;
+      this.proxyPort = proxyPort;
+      this.logFilePath = "/tmp/agentbridge.log";
+      this.verbose = false;
+    }
   }
 
   get appServerUrl() { return `ws://127.0.0.1:${this.appPort}`; }
@@ -200,6 +219,7 @@ export class CodexAdapter extends EventEmitter {
 
       appWs.onopen = () => {
         this.appServerWs = appWs;
+        this.appServerConnectedAt = Date.now();
         this.intentionalDisconnect = false;
         this.reconnectAttempts = 0;
         this.log(isReconnect ? "Reconnected to app-server" : "Connected to app-server (persistent)");
@@ -222,13 +242,18 @@ export class CodexAdapter extends EventEmitter {
         }
       };
 
-      appWs.onerror = () => {
-        this.log("App-server connection error");
-        if (!isReconnect) reject(new Error("Failed to connect to app-server"));
+      appWs.onerror = (event: Event) => {
+        const errDetail = (event as ErrorEvent).message ?? "unknown";
+        this.log(`App-server WS error: ${errDetail}`);
+        if (!isReconnect) reject(new Error(`Failed to connect to app-server: ${errDetail}`));
       };
 
-      appWs.onclose = () => {
-        this.log("App-server connection closed");
+      appWs.onclose = (event: CloseEvent) => {
+        const duration = this.appServerConnectedAt ? `${((Date.now() - this.appServerConnectedAt) / 1000).toFixed(1)}s` : "n/a";
+        this.appServerConnectedAt = null;
+        this.log(
+          `App-server WS closed (code=${event.code}, reason=${event.reason || "none"}, clean=${event.wasClean}, uptime=${duration}, intentional=${this.intentionalDisconnect})`,
+        );
         this.appServerWs = null;
         this.clearResponseTrackingState();
         this.activeTurnIds.clear();
@@ -268,8 +293,8 @@ export class CodexAdapter extends EventEmitter {
       try {
         await this.connectToAppServer(true);
         this.log("App-server reconnect successful");
-      } catch {
-        this.log("App-server reconnect attempt failed");
+      } catch (err: any) {
+        this.log(`App-server reconnect attempt failed: ${err?.message ?? "unknown"}`);
         this.scheduleReconnect();
       }
     }, delay);
@@ -302,7 +327,7 @@ export class CodexAdapter extends EventEmitter {
     this.tuiConnId++;
     ws.data.connId = this.tuiConnId;
     this.tuiWs = ws;
-    this.log(`TUI connected (conn #${this.tuiConnId})`);
+    this.log(`TUI connected (conn #${this.tuiConnId}, appServerWs=${this.appServerWs?.readyState ?? "null"}, threadId=${this.threadId ?? "none"})`);
     this.emit("tuiConnected", this.tuiConnId);
 
     // Replay buffered server requests.
@@ -889,9 +914,11 @@ export class CodexAdapter extends EventEmitter {
     }
   }
 
-  private log(msg: string) {
-    const line = `[${new Date().toISOString()}] [CodexAdapter] ${msg}\n`;
+  private log(msg: string, verboseOnly = false) {
+    if (verboseOnly && !this.verbose) return;
+    const prefix = verboseOnly ? "[CodexAdapter:VERBOSE]" : "[CodexAdapter]";
+    const line = `[${new Date().toISOString()}] ${prefix} ${msg}\n`;
     process.stderr.write(line);
-    try { appendFileSync(LOG_FILE, line); } catch {}
+    try { appendFileSync(this.logFilePath, line); } catch {}
   }
 }
