@@ -2,6 +2,7 @@ package daemon
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"net/http"
 	"os"
@@ -115,7 +116,9 @@ func New(opts Options) *Daemon {
 // Run blocks until ctx is cancelled, running all layers under an errgroup.
 func (d *Daemon) Run(ctx context.Context) error {
 	runCtx, runCancel := context.WithCancel(ctx)
+	d.stateMu.Lock()
 	d.runCancel = runCancel
+	d.stateMu.Unlock()
 	defer runCancel()
 
 	d.codex = codex.NewClient(codex.ClientOptions{Port: d.opts.AppPort, Logger: d.opts.Logger})
@@ -145,13 +148,24 @@ func (d *Daemon) Run(ctx context.Context) error {
 	d.control = control.NewServer(d)
 	d.statusBuf = filter.NewStatusBuffer(d.onStatusFlush, filter.StatusBufferOptions{})
 
+	// These fields (codex, proxy, control, statusBuf) are assigned above and
+	// never modified after this point. The go statement inside errgroup.Go()
+	// creates a happens-before edge (Go Memory Model §Goroutine creation),
+	// so Snapshot() may read them without holding stateMu.
 	g, gctx := errgroup.WithContext(runCtx)
 
 	g.Go(func() error {
 		srv := &http.Server{Addr: fmt.Sprintf("127.0.0.1:%d", d.opts.ProxyPort), Handler: d.proxy}
-		go func() { <-gctx.Done(); _ = srv.Shutdown(context.Background()) }()
+		go func() {
+			<-gctx.Done()
+			shutCtx, shutCancel := context.WithTimeout(context.Background(), 10*time.Second)
+			defer shutCancel()
+			if err := srv.Shutdown(shutCtx); err != nil {
+				srv.Close()
+			}
+		}()
 		err := srv.ListenAndServe()
-		if err == http.ErrServerClosed {
+		if errors.Is(err, http.ErrServerClosed) {
 			return nil
 		}
 		return err
@@ -159,9 +173,16 @@ func (d *Daemon) Run(ctx context.Context) error {
 
 	g.Go(func() error {
 		srv := &http.Server{Addr: fmt.Sprintf("127.0.0.1:%d", d.opts.ControlPort), Handler: d.control.HTTPHandler()}
-		go func() { <-gctx.Done(); _ = srv.Shutdown(context.Background()) }()
+		go func() {
+			<-gctx.Done()
+			shutCtx, shutCancel := context.WithTimeout(context.Background(), 10*time.Second)
+			defer shutCancel()
+			if err := srv.Shutdown(shutCtx); err != nil {
+				srv.Close()
+			}
+		}()
 		err := srv.ListenAndServe()
-		if err == http.ErrServerClosed {
+		if errors.Is(err, http.ErrServerClosed) {
 			return nil
 		}
 		return err
@@ -266,6 +287,7 @@ func (d *Daemon) scheduleIdleShutdown() {
 		}
 		d.idleShutdownTimer = nil
 		attached := d.claudeAttached
+		cancel := d.runCancel          // read under stateMu
 		d.stateMu.Unlock()
 		if attached {
 			return
@@ -273,8 +295,8 @@ func (d *Daemon) scheduleIdleShutdown() {
 		if d.proxy != nil && d.proxy.ConnectionCount() > 0 {
 			return
 		}
-		if d.runCancel != nil {
-			d.runCancel()
+		if cancel != nil {
+			cancel()
 		}
 	})
 	d.idleShutdownTimer = timer
