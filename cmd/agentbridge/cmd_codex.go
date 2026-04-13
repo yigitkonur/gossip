@@ -37,7 +37,8 @@ func newCodexCmd() *cobra.Command {
 				return err
 			}
 			fmt.Println("daemon ready. launching codex TUI with --remote", proxyURL)
-			tui := exec.Command("codex", "--enable", "tui_app_server", "--remote", proxyURL)
+			args = append([]string{"--enable", "tui_app_server", "--remote", proxyURL}, filterCodexArgs(args)...)
+			tui := exec.Command("codex", args...)
 			tui.Stdin = os.Stdin
 			tui.Stdout = os.Stdout
 			tui.Stderr = os.Stderr
@@ -74,3 +75,25 @@ func waitForProxyReady(ctx context.Context, proxyURL string) error {
 }
 
 func logToStderr(msg string) { fmt.Fprintln(os.Stderr, msg) }
+
+func filterCodexArgs(args []string) []string {
+	filtered := make([]string, 0, len(args))
+	skipNext := false
+	for i, arg := range args {
+		if skipNext {
+			skipNext = false
+			continue
+		}
+		switch arg {
+		case "--remote", "--enable":
+			skipNext = true
+			continue
+		case "tui_app_server":
+			if i > 0 && args[i-1] == "--enable" {
+				continue
+			}
+		}
+		filtered = append(filtered, arg)
+	}
+	return filtered
+}

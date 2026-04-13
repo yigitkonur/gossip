@@ -49,6 +49,8 @@ type Daemon struct {
 	claudeOnlineNoticeSent   bool
 	claudeOfflineNoticeShown bool
 	runCancel                context.CancelFunc
+	replyRequired            bool
+	replyReceivedDuringTurn  bool
 	bridgeReadyAt            atomic.Int64
 }
 
@@ -173,10 +175,21 @@ func (d *Daemon) handleCodexEvent(ctx context.Context, ev codex.Event) {
 		d.broadcastSystem(ctx, "system_turn_started", "⏳ Codex is working on the current task.")
 	case codex.EventTurnCompleted:
 		d.statusBuf.Flush("turn completed")
+		if d.replyRequired && !d.replyReceivedDuringTurn {
+			d.broadcastSystem(ctx, "system_reply_missing", "⚠️ Codex completed the turn without sending a reply while require_reply was set.")
+		}
+		d.replyRequired = false
+		d.replyReceivedDuringTurn = false
 		d.broadcastSystem(ctx, "system_turn_completed", "✅ Codex finished the current turn. You can reply now if needed.")
 	case codex.EventAgentMessage:
 		msg, ok := ev.MessageToBridge()
 		if !ok {
+			return
+		}
+		if d.replyRequired {
+			d.replyReceivedDuringTurn = true
+			d.statusBuf.Flush("reply-required message arrived")
+			d.control.Broadcast(ctx, msg)
 			return
 		}
 		result := filter.Classify(msg.Content, d.filter)
@@ -309,9 +322,14 @@ func (d *Daemon) OnClaudeDisconnect(reason string) {
 
 // OnClaudeToCodex implements control.Handler.
 func (d *Daemon) OnClaudeToCodex(ctx context.Context, msg protocol.BridgeMessage, requireReply bool) (bool, string) {
+	if !d.tuiState.CanReply() {
+		return false, "Codex is not ready. Wait for TUI to connect and create a thread."
+	}
 	body := msg.Content + "\n\n" + filter.BridgeContractReminder
 	if requireReply {
 		body += filter.ReplyRequiredInstruction
+		d.replyRequired = true
+		d.replyReceivedDuringTurn = false
 	}
 	return d.codex.InjectMessage(ctx, body)
 }
