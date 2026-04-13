@@ -9,9 +9,9 @@ import (
 	"time"
 
 	"github.com/coder/websocket"
-	"github.com/raysonmeng/agent-bridge/internal/config"
-	"github.com/raysonmeng/agent-bridge/internal/daemon"
-	"github.com/raysonmeng/agent-bridge/internal/statedir"
+	"github.com/yigitkonur/gossip/internal/config"
+	"github.com/yigitkonur/gossip/internal/daemon"
+	"github.com/yigitkonur/gossip/internal/statedir"
 	"github.com/spf13/cobra"
 )
 
@@ -106,16 +106,16 @@ func normalizeCodexArgs(args []string) (codexArgsResult, error) {
 		arg := args[i]
 		switch {
 		case arg == "--remote":
-			return codexArgsResult{}, ownedCodexFlagError(`"--remote" is automatically set by agentbridge codex.`)
+			return codexArgsResult{}, ownedCodexFlagError(`"--remote" is automatically set by gossip codex.`)
 		case strings.HasPrefix(arg, "--remote="):
-			return codexArgsResult{}, ownedCodexFlagError(`"--remote" is automatically set by agentbridge codex.`)
+			return codexArgsResult{}, ownedCodexFlagError(`"--remote" is automatically set by gossip codex.`)
 		case arg == "--enable":
 			if i+1 < len(args) && args[i+1] == "tui_app_server" {
-				return codexArgsResult{}, ownedCodexFlagError(`"--enable tui_app_server" is automatically set by agentbridge codex.`)
+				return codexArgsResult{}, ownedCodexFlagError(`"--enable tui_app_server" is automatically set by gossip codex.`)
 			}
 			filtered = append(filtered, arg)
 		case arg == "--enable=tui_app_server":
-			return codexArgsResult{}, ownedCodexFlagError(`"--enable=tui_app_server" is automatically set by agentbridge codex.`)
+			return codexArgsResult{}, ownedCodexFlagError(`"--enable=tui_app_server" is automatically set by gossip codex.`)
 		default:
 			filtered = append(filtered, arg)
 		}

@@ -10,7 +10,7 @@ import (
 	"time"
 
 	"github.com/coder/websocket"
-	"github.com/raysonmeng/agent-bridge/internal/protocol"
+	"github.com/yigitkonur/gossip/internal/protocol"
 )
 
 // fakeAppServer implements the bare minimum of the Codex app-server protocol for integration tests.

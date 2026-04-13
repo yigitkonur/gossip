@@ -1,4 +1,4 @@
-# AgentBridge v2 Architecture Design
+# Gossip v2 Architecture Design
 
 > Reconstructed from the Claude + Codex architecture discussion on 2026-03-22, then updated with the follow-up review.
 
@@ -53,7 +53,7 @@ The next chapter shows the resulting high-level architecture.
 
 ```text
 ┌────────────────────────────────────────────────────────────┐
-│                     AgentBridge Daemon                     │
+│                     Gossip Daemon                     │
 │                    (Pure Message Router)                   │
 │                                                            │
 │  Agent Registry              Room Manager                  │
@@ -114,7 +114,7 @@ This architecture makes the following properties explicit:
 | **Room** | A communication scope rather than a process, thread, or runtime instance. A room limits communication to a defined set of members. It is a logical collaboration unit that can support one-to-one or multi-agent work. A room is not the owner of agent lifecycle; it is only part of the communication topology. |
 | **Unassigned state** | An assignment state, not a room. Newly connected agents begin in the unassigned state until user action or policy assigns them to a room. Unassigned agents are visible to the system, but they must not receive messages merely because they share that state. This state exists for discovery and assignment, not for communication. |
 | **Policy** | A decision layer independent from the core router. A policy may decide whether to auto-pair, require invite acceptance, enable turn-based coordination, or apply semantic routing. Policies may read system state and propose actions, but they must not change the fundamental responsibility boundary of the core router. Policies are pluggable and should not hardcode agent-specific logic into the daemon. |
-| **Adapter** | The bridge layer between a concrete agent runtime and the AgentBridge control plane. An adapter maps runtime-specific input and output into shared AgentBridge semantics. It may contain runtime-specific behavior, but that behavior does not belong in the daemon. Different agent types may use different adapters while still appearing to the daemon as the same abstract agent model. |
+| **Adapter** | The bridge layer between a concrete agent runtime and the Gossip control plane. An adapter maps runtime-specific input and output into shared Gossip semantics. It may contain runtime-specific behavior, but that behavior does not belong in the daemon. Different agent types may use different adapters while still appearing to the daemon as the same abstract agent model. |
 
 ### Room membership model
 
@@ -513,7 +513,7 @@ Adapters isolate runtime-specific concerns from the daemon. The daemon sees a un
 ### 8.1 Adapter Responsibilities
 
 - An adapter owns the integration with a specific runtime.
-- An adapter translates runtime-specific input and output into AgentBridge protocol semantics.
+- An adapter translates runtime-specific input and output into Gossip protocol semantics.
 - An adapter receives routed messages from the daemon and turns runtime output into protocol messages or events.
 - An adapter may start and manage its own runtime process or runtime connection.
 - An adapter is responsible for reporting runtime state back into the control plane.

@@ -10,7 +10,7 @@ import (
 	"time"
 
 	"github.com/coder/websocket"
-	"github.com/raysonmeng/agent-bridge/internal/protocol"
+	"github.com/yigitkonur/gossip/internal/protocol"
 )
 
 type testHandler struct {
@@ -122,7 +122,6 @@ func TestServer_OlderAttachedBridgeCannotSendAfterReplacement(t *testing.T) {
 		t.Fatalf("stale attached bridge unexpectedly reached handler: %+v", h.replies)
 	}
 }
-
 
 func TestServer_HandleReady_SetsContentTypeOn503(t *testing.T) {
 	h := &testHandler{status: Status{BridgeReady: false}}

@@ -6,8 +6,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/raysonmeng/agent-bridge/internal/jsonrpc"
-	"github.com/raysonmeng/agent-bridge/internal/protocol"
+	"github.com/yigitkonur/gossip/internal/jsonrpc"
+	"github.com/yigitkonur/gossip/internal/protocol"
 )
 
 func TestClient_DispatchNotification_AgentMessageBuffering(t *testing.T) {
@@ -96,7 +96,6 @@ func TestClient_TurnInProgress_TracksNestedTurns(t *testing.T) {
 		t.Fatal("turn should not be in progress after all nested turns complete")
 	}
 }
-
 
 func TestClient_WatchProcessExit_ClearsReadinessState(t *testing.T) {
 	c := NewClient(ClientOptions{})

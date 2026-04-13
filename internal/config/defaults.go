@@ -1,6 +1,6 @@
 package config
 
-// DefaultConfig is the factory default for new .agentbridge/config.json files.
+// DefaultConfig is the factory default for new .gossip/config.json files.
 var DefaultConfig = Config{
 	Version: "1.0",
 	Daemon:  DaemonConfig{Port: 4500, ProxyPort: 4501},

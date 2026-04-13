@@ -8,9 +8,9 @@ import (
 
 	"github.com/coder/websocket"
 
-	"github.com/raysonmeng/agent-bridge/internal/control"
-	"github.com/raysonmeng/agent-bridge/internal/protocol"
-	"github.com/raysonmeng/agent-bridge/internal/statedir"
+	"github.com/yigitkonur/gossip/internal/control"
+	"github.com/yigitkonur/gossip/internal/protocol"
+	"github.com/yigitkonur/gossip/internal/statedir"
 )
 
 func TestDaemon_FullRoundTrip_RealCodex(t *testing.T) {

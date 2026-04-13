@@ -7,7 +7,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/raysonmeng/agent-bridge/internal/protocol"
+	"github.com/yigitkonur/gossip/internal/protocol"
 )
 
 func TestServer_PullMode_QueuesMessages(t *testing.T) {

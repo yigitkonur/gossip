@@ -6,7 +6,7 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/raysonmeng/agent-bridge/internal/protocol"
+	"github.com/yigitkonur/gossip/internal/protocol"
 )
 
 var replyInputSchema = json.RawMessage(`{

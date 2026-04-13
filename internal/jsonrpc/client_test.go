@@ -7,7 +7,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/raysonmeng/agent-bridge/internal/protocol"
+	"github.com/yigitkonur/gossip/internal/protocol"
 )
 
 // loopback is a Writer that captures messages and routes them back via a channel.
@@ -123,7 +123,6 @@ func TestClient_Call_UsesNegativeIDs(t *testing.T) {
 		t.Fatalf("Call returned error: %v", err)
 	}
 }
-
 
 func TestClient_HandleIncomingAfterClose_DoesNotPanic(t *testing.T) {
 	lb := newLoopback()

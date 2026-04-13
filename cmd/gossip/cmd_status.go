@@ -7,8 +7,8 @@ import (
 	"net/http"
 	"time"
 
-	"github.com/raysonmeng/agent-bridge/internal/daemon"
-	"github.com/raysonmeng/agent-bridge/internal/statedir"
+	"github.com/yigitkonur/gossip/internal/daemon"
+	"github.com/yigitkonur/gossip/internal/statedir"
 	"github.com/spf13/cobra"
 )
 

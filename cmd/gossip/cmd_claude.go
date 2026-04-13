@@ -8,19 +8,19 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/raysonmeng/agent-bridge/internal/config"
-	"github.com/raysonmeng/agent-bridge/internal/control"
-	"github.com/raysonmeng/agent-bridge/internal/daemon"
-	"github.com/raysonmeng/agent-bridge/internal/mcp"
-	"github.com/raysonmeng/agent-bridge/internal/protocol"
-	"github.com/raysonmeng/agent-bridge/internal/statedir"
+	"github.com/yigitkonur/gossip/internal/config"
+	"github.com/yigitkonur/gossip/internal/control"
+	"github.com/yigitkonur/gossip/internal/daemon"
+	"github.com/yigitkonur/gossip/internal/mcp"
+	"github.com/yigitkonur/gossip/internal/protocol"
+	"github.com/yigitkonur/gossip/internal/statedir"
 	"github.com/spf13/cobra"
 )
 
 const claudeInstructions = `Codex is an AI coding agent (OpenAI) running in a separate session on the same machine.
 
 ## Message delivery
-Messages from Codex may arrive as <channel source="agentbridge" chat_id="..." user="Codex" ...> tags.
+Messages from Codex may arrive as <channel source="gossip" chat_id="..." user="Codex" ...> tags.
 Use the reply tool to send messages back to Codex.
 Use the get_messages tool to check for pending messages.
 
@@ -67,7 +67,7 @@ func newClaudeCmd() *cobra.Command {
 				OnDisconnect: func(_ int, _ string, _ time.Duration) {
 					if lc.WasKilled() {
 						bridgeDisabled.Store(true)
-						pushSystem("system_bridge_disabled", "⛔ AgentBridge was stopped by agentbridge kill. Bridge is staying idle until you restart with agentbridge codex.")
+						pushSystem("system_bridge_disabled", "⛔ Gossip was stopped by gossip kill. Bridge is staying idle until you restart with gossip codex.")
 					}
 				},
 				ShouldReconnect: func() bool { return !bridgeDisabled.Load() && !lc.WasKilled() },
@@ -75,13 +75,13 @@ func newClaudeCmd() *cobra.Command {
 			})
 
 			srv = mcp.NewServer(mcp.ServerOptions{
-				Name:         "agentbridge",
+				Name:         "gossip",
 				Version:      version,
 				Instructions: claudeInstructions,
 				DeliveryMode: resolveClaudeDeliveryMode(cfg),
 				ReplyHandler: func(ctx context.Context, msg protocol.BridgeMessage, requireReply bool) mcp.ReplyResult {
 					if bridgeDisabled.Load() {
-						return mcp.ReplyResult{Success: false, Error: "AgentBridge is disabled by agentbridge kill. Restart with agentbridge codex to reconnect."}
+						return mcp.ReplyResult{Success: false, Error: "Gossip is disabled by gossip kill. Restart with gossip codex to reconnect."}
 					}
 					ok, errMsg := cc.SendReply(ctx, msg, requireReply)
 					return mcp.ReplyResult{Success: ok, Error: errMsg}
@@ -112,7 +112,7 @@ func newClaudeCmd() *cobra.Command {
 								continue
 							}
 							bridgeDisabled.Store(false)
-							pushSystem("system_bridge_recovered", "✅ AgentBridge daemon reconnected after the killed sentinel was cleared.")
+							pushSystem("system_bridge_recovered", "✅ Gossip daemon reconnected after the killed sentinel was cleared.")
 							startReconnect()
 						}
 					}
@@ -124,7 +124,7 @@ func newClaudeCmd() *cobra.Command {
 				go func() {
 					<-srv.Ready()
 					startRecoveryPoller()
-					pushSystem("system_bridge_disabled", "⛔ AgentBridge was stopped by agentbridge kill. Bridge is staying idle until you restart with agentbridge codex.")
+					pushSystem("system_bridge_disabled", "⛔ Gossip was stopped by gossip kill. Bridge is staying idle until you restart with gossip codex.")
 				}()
 				return srv.Serve(ctx, os.Stdin, os.Stdout)
 			}
@@ -146,7 +146,7 @@ func newClaudeCmd() *cobra.Command {
 }
 
 func resolveClaudeDeliveryMode(cfg config.Config) mcp.DeliveryMode {
-	if mode, ok := parseDeliveryMode(os.Getenv("AGENTBRIDGE_MODE")); ok {
+	if mode, ok := parseDeliveryMode(os.Getenv("GOSSIP_MODE")); ok {
 		return mode
 	}
 	if agent, ok := cfg.Agents["claude"]; ok {

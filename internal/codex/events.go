@@ -3,7 +3,7 @@ package codex
 import (
 	"time"
 
-	"github.com/raysonmeng/agent-bridge/internal/protocol"
+	"github.com/yigitkonur/gossip/internal/protocol"
 )
 
 // EventKind classifies a Codex lifecycle event.

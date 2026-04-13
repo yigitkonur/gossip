@@ -1,4 +1,4 @@
-// Package config loads and saves the per-project .agentbridge/config.json.
+// Package config loads and saves the per-project .gossip/config.json.
 package config
 
 import (
@@ -50,7 +50,7 @@ func NewService(projectRoot string) *Service {
 	if projectRoot == "" {
 		projectRoot, _ = os.Getwd()
 	}
-	dir := filepath.Join(projectRoot, ".agentbridge")
+	dir := filepath.Join(projectRoot, ".gossip")
 	return &Service{
 		root:              projectRoot,
 		configDir:         dir,

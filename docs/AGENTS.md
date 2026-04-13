@@ -4,7 +4,7 @@ This file applies to `docs/`.
 
 ## What this folder is
 - This folder holds design notes, architecture docs, and planning material.
-- Some docs describe the old TypeScript system, so they are historical context rather than current truth.
+- Some docs describe earlier design stages, so they are historical context rather than current truth.
 
 ## When editing here
 - Label historical docs clearly.
@@ -13,4 +13,4 @@ This file applies to `docs/`.
 
 ## Keep these rules true
 - Current Go behavior should be described as current.
-- Legacy TypeScript behavior should be described as legacy/reference-only.
+- Earlier behavior should be described as historical/reference-only.

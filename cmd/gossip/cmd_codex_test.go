@@ -44,10 +44,10 @@ func TestNormalizeCodexArgs_RejectsOwnedFlags(t *testing.T) {
 		args []string
 		want string
 	}{
-		{name: "remote split", args: []string{"--remote", "ws://127.0.0.1:7777"}, want: `"--remote" is automatically set by agentbridge codex`},
-		{name: "remote equals", args: []string{"--remote=ws://127.0.0.1:7777"}, want: `"--remote" is automatically set by agentbridge codex`},
-		{name: "owned enable split", args: []string{"--enable", "tui_app_server"}, want: `"--enable tui_app_server" is automatically set by agentbridge codex`},
-		{name: "owned enable equals", args: []string{"--enable=tui_app_server"}, want: `"--enable=tui_app_server" is automatically set by agentbridge codex`},
+		{name: "remote split", args: []string{"--remote", "ws://127.0.0.1:7777"}, want: `"--remote" is automatically set by gossip codex`},
+		{name: "remote equals", args: []string{"--remote=ws://127.0.0.1:7777"}, want: `"--remote" is automatically set by gossip codex`},
+		{name: "owned enable split", args: []string{"--enable", "tui_app_server"}, want: `"--enable tui_app_server" is automatically set by gossip codex`},
+		{name: "owned enable equals", args: []string{"--enable=tui_app_server"}, want: `"--enable=tui_app_server" is automatically set by gossip codex`},
 	}
 
 	for _, tt := range tests {
@@ -94,7 +94,7 @@ func TestNormalizeCodexArgs_RejectsOwnedFlagsAfterLeadingSeparator(t *testing.T)
 	if err == nil {
 		t.Fatal("expected error")
 	}
-	if !strings.Contains(err.Error(), `"--remote" is automatically set by agentbridge codex`) {
+	if !strings.Contains(err.Error(), `"--remote" is automatically set by gossip codex`) {
 		t.Fatalf("error %q does not contain owned-flag rejection", err.Error())
 	}
 }

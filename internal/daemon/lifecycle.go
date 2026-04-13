@@ -1,4 +1,4 @@
-// Package daemon owns the AgentBridge daemon lifecycle: PID file, liveness
+// Package daemon owns the Gossip daemon lifecycle: PID file, liveness
 // check, and self-launch as a subprocess of the main binary.
 package daemon
 
@@ -14,7 +14,7 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/raysonmeng/agent-bridge/internal/statedir"
+	"github.com/yigitkonur/gossip/internal/statedir"
 )
 
 // LifecycleOptions configures a Lifecycle.
@@ -227,7 +227,7 @@ func (l *Lifecycle) acquireLock() bool {
 		return false
 	}
 	pid, convErr := strconv.Atoi(string(bytesTrimSpace(b)))
-	if convErr != nil || !IsProcessAlive(pid) || !isAgentBridgeProcess(pid) {
+	if convErr != nil || !IsProcessAlive(pid) || !isGossipProcess(pid) {
 		l.releaseLock()
 		f, err = os.OpenFile(l.opts.StateDir.LockFile(), os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0o644)
 		if err != nil {
@@ -254,7 +254,7 @@ func (l *Lifecycle) isDaemonProcess(pid int) bool {
 		return false
 	}
 	cmd := string(bytesTrimSpace(out))
-	return strings.Contains(cmd, "daemon") && (strings.Contains(cmd, "agentbridge") || strings.Contains(cmd, "agent_bridge"))
+	return strings.Contains(cmd, "daemon") && (strings.Contains(cmd, "gossip"))
 }
 
 func bytesTrimSpace(b []byte) []byte {
@@ -269,11 +269,11 @@ func bytesTrimSpace(b []byte) []byte {
 	return b[start:end]
 }
 
-func isAgentBridgeProcess(pid int) bool {
+func isGossipProcess(pid int) bool {
 	out, err := exec.Command("ps", "-p", strconv.Itoa(pid), "-o", "command=").Output()
 	if err != nil {
 		return false
 	}
 	cmd := string(bytesTrimSpace(out))
-	return strings.Contains(cmd, "agentbridge") || strings.Contains(cmd, "agent_bridge")
+	return strings.Contains(cmd, "gossip")
 }

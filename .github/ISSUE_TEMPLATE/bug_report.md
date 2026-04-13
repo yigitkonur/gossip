@@ -26,7 +26,7 @@ What actually happened.
 ## Environment
 
 - OS: [e.g., macOS 15.x, Ubuntu 24.04]
-- Bun version: [e.g., 1.2.x]
+- Go version: [e.g., 1.23.x]
 - Claude Code version: [e.g., v2.1.80]
 - Codex CLI version: [e.g., 0.x.x]
 

@@ -7,7 +7,7 @@ import (
 	"sync"
 
 	"github.com/coder/websocket"
-	"github.com/raysonmeng/agent-bridge/internal/protocol"
+	"github.com/yigitkonur/gossip/internal/protocol"
 )
 
 // Handler is the daemon-side callback surface invoked by the control server.

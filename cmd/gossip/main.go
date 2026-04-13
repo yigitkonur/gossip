@@ -18,8 +18,8 @@ func main() {
 
 func newRootCmd() *cobra.Command {
 	root := &cobra.Command{
-		Use:   "agentbridge",
-		Short: "AgentBridge — bridge between Claude Code and Codex CLI",
+		Use:   "gossip",
+		Short: "Gossip — bridge between Claude Code and Codex CLI",
 	}
 	root.AddCommand(
 		newVersionCmd(),

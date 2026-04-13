@@ -9,15 +9,15 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/raysonmeng/agent-bridge/internal/daemon"
-	"github.com/raysonmeng/agent-bridge/internal/statedir"
+	"github.com/yigitkonur/gossip/internal/daemon"
+	"github.com/yigitkonur/gossip/internal/statedir"
 	"github.com/spf13/cobra"
 )
 
 func newKillCmd() *cobra.Command {
 	return &cobra.Command{
 		Use:   "kill",
-		Short: "Stop the AgentBridge daemon and write the killed sentinel",
+		Short: "Stop the Gossip daemon and write the killed sentinel",
 		RunE: func(cmd *cobra.Command, args []string) error {
 			sd := statedir.New("")
 			_ = sd.Ensure()

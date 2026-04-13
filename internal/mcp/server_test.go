@@ -43,7 +43,7 @@ func TestServer_InitializeDeclaresChannelCapability(t *testing.T) {
 	var out safeBuffer
 	stdin := strings.NewReader(`{"jsonrpc":"2.0","id":1,"method":"initialize","params":{}}` + "\n")
 
-	s := NewServer(ServerOptions{Name: "agentbridge", Version: "0.2.0"})
+	s := NewServer(ServerOptions{Name: "gossip", Version: "0.2.0"})
 	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
 	defer cancel()
 
@@ -81,7 +81,7 @@ func TestServer_InitializeDeclaresChannelCapability(t *testing.T) {
 	if _, ok := init.Capabilities.Experimental["claude/channel"]; !ok {
 		t.Errorf("capabilities.experimental[claude/channel] missing: %+v", init.Capabilities)
 	}
-	if init.ServerInfo.Name != "agentbridge" {
+	if init.ServerInfo.Name != "gossip" {
 		t.Errorf("serverInfo.name = %q", init.ServerInfo.Name)
 	}
 }

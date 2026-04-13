@@ -15,7 +15,7 @@ func TestService_InitDefaults_CreatesFiles(t *testing.T) {
 	if len(created) != 2 {
 		t.Errorf("created = %d files, want 2", len(created))
 	}
-	if s.ConfigPath() != filepath.Join(dir, ".agentbridge", "config.json") {
+	if s.ConfigPath() != filepath.Join(dir, ".gossip", "config.json") {
 		t.Errorf("bad ConfigPath")
 	}
 	cfg, err := s.Load()

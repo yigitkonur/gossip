@@ -3,7 +3,7 @@
 This file applies to `internal/statedir/`.
 
 ## What this folder is
-- This folder decides where AgentBridge stores runtime files on disk.
+- This folder decides where Gossip stores runtime files on disk.
 - It keeps PID files, lock files, logs, status files, and sentinels in one predictable place.
 
 ## When editing here

@@ -7,7 +7,7 @@ import (
 )
 
 func TestStateDir_EnsureCreatesDir(t *testing.T) {
-	dir := filepath.Join(t.TempDir(), "sub", "agentbridge")
+	dir := filepath.Join(t.TempDir(), "sub", "gossip")
 	s := New(dir)
 	if err := s.Ensure(); err != nil {
 		t.Fatalf("Ensure: %v", err)

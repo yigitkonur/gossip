@@ -4,7 +4,7 @@ import (
 	"os"
 	"testing"
 
-	"github.com/raysonmeng/agent-bridge/internal/statedir"
+	"github.com/yigitkonur/gossip/internal/statedir"
 )
 
 func TestLifecycle_KilledSentinel(t *testing.T) {

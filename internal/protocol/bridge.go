@@ -1,4 +1,4 @@
-// Package protocol defines the wire types exchanged between AgentBridge,
+// Package protocol defines the wire types exchanged between Gossip,
 // Claude Code, and Codex app-server.
 package protocol
 

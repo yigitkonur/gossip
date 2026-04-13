@@ -12,12 +12,12 @@ type ThreadStartResponse struct {
 	Thread Thread `json:"thread"`
 }
 
-// Thread is the minimal thread identity shape AgentBridge tracks.
+// Thread is the minimal thread identity shape Gossip tracks.
 type Thread struct {
 	ID string `json:"id"`
 }
 
-// Turn is the minimal turn identity shape AgentBridge tracks.
+// Turn is the minimal turn identity shape Gossip tracks.
 type Turn struct {
 	ID string `json:"id"`
 }

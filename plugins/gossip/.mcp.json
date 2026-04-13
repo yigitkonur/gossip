@@ -1,7 +1,7 @@
 {
   "mcpServers": {
-    "agentbridge": {
-      "command": "agentbridge",
+    "gossip": {
+      "command": "gossip",
       "args": ["claude"],
       "env": {}
     }

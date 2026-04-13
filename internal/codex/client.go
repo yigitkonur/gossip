@@ -11,8 +11,8 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/raysonmeng/agent-bridge/internal/jsonrpc"
-	"github.com/raysonmeng/agent-bridge/internal/protocol"
+	"github.com/yigitkonur/gossip/internal/jsonrpc"
+	"github.com/yigitkonur/gossip/internal/protocol"
 )
 
 // ClientOptions configures a Codex Client.
@@ -187,7 +187,7 @@ func (c *Client) InjectMessage(ctx context.Context, text string) (bool, string) 
 
 func (c *Client) initialize(ctx context.Context) error {
 	params := protocol.InitializeParams{
-		ClientInfo: protocol.ClientInfo{Name: "agentbridge", Version: "0.2.0"},
+		ClientInfo: protocol.ClientInfo{Name: "gossip", Version: "0.2.0"},
 	}
 	callCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
 	defer cancel()

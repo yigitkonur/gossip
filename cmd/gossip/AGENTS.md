@@ -1,6 +1,6 @@
 # AGENTS.md
 
-This file applies to `cmd/agentbridge/`.
+This file applies to `cmd/gossip/`.
 
 ## What this folder is
 - This folder contains the real user-facing Go CLI.

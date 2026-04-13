@@ -1,250 +1,101 @@
-# AgentBridge Phase 3 Final State
+# Gossip Phase 3 Final State
 
 ## Status
 
-Phase 3 is complete in the current codebase.
+Phase 3 is complete in the current Go codebase.
 
-This document records what actually shipped, not the earlier proposal shape. If an older planning note or conversation describes Phase 3 as future work, this file should be treated as the source of truth for the delivered Phase 3 surface.
+This document records the delivered Go runtime surface.
 
-## What Phase 3 Delivered
+## Delivered surface
 
-Phase 3 turned AgentBridge from a repo-first prototype into a CLI-first local product flow built around a foreground Claude integration, a persistent daemon, and an attachable Codex TUI.
+Phase 3 established Gossip as a CLI-first local product with:
 
-Delivered scope:
+- `gossip init`
+- `gossip claude`
+- `gossip codex`
+- `gossip kill`
+- `gossip status`
+- `gossip version`
+- project-local `.gossip/` config files
+- a shared machine-local state directory through `internal/statedir`
+- a background daemon coordinated through `internal/daemon`
+- a Claude-facing MCP server in `internal/mcp`
+- a Codex adapter and TUI proxy in `internal/codex`
 
-- A repository-local `agentbridge` CLI entrypoint via `src/cli.ts` and the package `bin` field.
-- First-run setup via `agentbridge init`.
-- Claude startup via `agentbridge claude`.
-- Codex startup and daemon bootstrap via `agentbridge codex`.
-- Controlled daemon shutdown via `agentbridge kill`.
-- A developer-only local plugin workflow via `agentbridge dev`.
-- Project-level config generation through `.agentbridge/config.json` and `.agentbridge/collaboration.md`.
-- Shared runtime state management through `StateDirResolver`.
-- Shared daemon lifecycle logic through `DaemonLifecycle`.
-- Plugin-oriented runtime artifacts under `plugins/agentbridge/server/`.
+## Runtime architecture
 
-## User-Facing CLI
+### Foreground Claude process
 
-The current command set is:
+The foreground Claude entrypoint lives under `cmd/gossip/` and starts the MCP server used by Claude Code. It:
 
-- `agentbridge init`
-- `agentbridge dev`
-- `agentbridge claude [args...]`
-- `agentbridge codex [args...]`
-- `agentbridge kill`
+- serves MCP over stdio
+- ensures the background daemon is running
+- connects to the control WebSocket
+- forwards Codex messages to Claude and Claude replies back to Codex
 
-### `agentbridge init`
+### Background daemon
 
-Current behavior:
+The background daemon owns the long-lived coordination state. It:
 
-- Verifies `bun`, `claude`, and `codex` are available.
-- Enforces a minimum Claude Code version of `2.1.80`.
-- Creates `.agentbridge/config.json` if missing.
-- Creates `.agentbridge/collaboration.md` if missing.
-- Attempts `claude plugin install agentbridge@agentbridge` as a best-effort step.
+- supervises the Codex app-server process
+- exposes health, readiness, and control endpoints on localhost
+- buffers messages while the foreground side is detached
+- tracks TUI connectivity and turn readiness
 
-Important nuance:
+### Shared helpers
 
-- `init` does not patch a global Claude MCP JSON file.
-- Plugin installation is best-effort and may be skipped if the marketplace is not configured yet.
+- `internal/config` manages `.gossip/config.json` and `.gossip/collaboration.md`
+- `internal/statedir` resolves the machine-local runtime state path
+- `internal/control` defines the foreground/daemon WebSocket protocol
+- `internal/protocol` defines shared wire types
 
-### `agentbridge claude`
+## User commands
 
-Current behavior:
+### `gossip init`
+Creates `.gossip/config.json` and `.gossip/collaboration.md` if they do not already exist.
 
-- Rejects AgentBridge-owned flags from the user.
-- Starts Claude Code with:
+### `gossip claude`
+Runs the foreground MCP server used by Claude Code.
 
-```bash
-claude --dangerously-load-development-channels plugin:agentbridge@agentbridge
-```
+### `gossip codex`
+Ensures the daemon is running, waits for the local proxy, and launches the Codex TUI attached to that proxy.
 
-- Passes through additional user arguments after the injected channel flags.
+### `gossip kill`
+Writes the killed sentinel and stops the background daemon.
 
-Important nuance:
+### `gossip status`
+Prints the current daemon snapshot.
 
-- The shipped implementation still uses the development-channel flag.
-- It does not yet switch to `--channels`, because the current flow still depends on a development plugin/runtime path.
+### `gossip version`
+Prints the current build version.
 
-### `agentbridge codex`
+## Runtime state
 
-Current behavior:
+Project-local config lives under `.gossip/` in the current workspace.
 
-- Rejects AgentBridge-owned transport flags such as `--remote` and `--enable tui_app_server`.
-- Uses `DaemonLifecycle` to reuse or launch the background daemon.
-- Reads the live proxy URL from daemon status when available.
-- Falls back to the project config when daemon status is unavailable.
-- Launches Codex with:
+Machine-local runtime state defaults to:
 
-```bash
-codex --enable tui_app_server --remote ws://127.0.0.1:<proxy-port>
-```
+- macOS: `~/Library/Application Support/Gossip`
+- Linux: `${XDG_STATE_HOME:-~/.local/state}/gossip`
+- override: `GOSSIP_STATE_DIR`
 
-- Passes through additional user arguments after the injected transport flags.
-
-### `agentbridge kill`
-
-Current behavior:
-
-- Marks a `killed` sentinel before shutting down the daemon.
-- Prevents the foreground Claude-side bridge from racing to relaunch the daemon during disconnect handling.
-- Removes stale state when no live daemon exists.
-
-### `agentbridge dev`
-
-Current behavior:
-
-- Developer workflow only.
-- Registers a local Claude marketplace.
-- Installs the local AgentBridge plugin into Claude.
-- Syncs local plugin files into Claude's plugin cache.
-
-Important nuance:
-
-- This command is for local development of the plugin/runtime packaging flow.
-- It is not part of the normal end-user quick start.
-
-## Actual Runtime Architecture
-
-Phase 3 kept the two-process design, but productized it through shared lifecycle helpers and CLI commands.
-
-### Foreground process
-
-`src/bridge.ts` is the Claude-facing foreground process:
-
-- starts as the MCP server runtime seen by Claude Code
-- owns the `ClaudeAdapter`
-- ensures the daemon exists through `DaemonLifecycle`
-- connects to the daemon control socket through `DaemonClient`
-- forwards Codex messages to Claude and replies back to Codex
-
-### Background process
-
-`src/daemon.ts` is the persistent background process:
-
-- owns the Codex adapter and proxy
-- exposes `/healthz`, `/readyz`, and `/ws` on the local control port
-- survives Claude foreground restarts
-- manages buffered messages, turn coordination, and Codex thread state
-
-### Shared runtime helpers added or formalized in Phase 3
-
-- `src/daemon-lifecycle.ts`
-  - shared launch, health-check, pid, lock, and kill behavior
-- `src/config-service.ts`
-  - project config loading, defaults, and collaboration file generation
-- `src/state-dir.ts`
-  - OS-specific shared runtime state directory resolution
-- `src/daemon-client.ts`
-  - foreground client for daemon control WebSocket traffic
-
-### Plugin-oriented delivery shape
-
-The runtime is designed around Claude-side plugin or channel delivery:
-
-- source entrypoints live under `src/`
-- bundled runtime artifacts live under `plugins/agentbridge/server/`
-- the CLI is the main operator-facing surface
-
-This means Phase 3 shipped the plugin-oriented architecture, even though packaging and marketplace polish are still evolving.
-
-## Configuration and State
-
-Phase 3 split persistent data into two layers.
-
-### Project-level config
-
-Stored in the repo under `.agentbridge/`:
-
-- `config.json`
-- `collaboration.md`
-
-This data is project-specific and travels with the working tree.
-
-### Machine-local runtime state
-
-Resolved by `StateDirResolver`:
-
-- macOS: `~/Library/Application Support/AgentBridge`
-- Linux: `${XDG_STATE_HOME:-~/.local/state}/agentbridge`
-- override: `AGENTBRIDGE_STATE_DIR`
-
-Files maintained there include:
+Files stored there include:
 
 - `daemon.pid`
 - `daemon.lock`
 - `status.json`
-- `agentbridge.log`
+- `gossip.log`
 - `killed`
+- `codex-tui.pid`
 
-This split is intentional:
+## Environment variables
 
-- `.agentbridge/` is for shared project defaults and collaboration rules
-- the state dir is for local process lifecycle and diagnostics
-
-## Phase 3 Runtime Controls
-
-The current implementation uses these environment variables as the main runtime controls:
-
-| Variable | Purpose |
-| --- | --- |
-| `AGENTBRIDGE_STATE_DIR` | Override the machine-local runtime state directory |
-| `AGENTBRIDGE_DAEMON_ENTRY` | Override the daemon entrypoint used by `DaemonLifecycle` |
-| `AGENTBRIDGE_CONTROL_PORT` | Control HTTP/WebSocket port between foreground and daemon |
-| `CODEX_WS_PORT` | Codex app-server listen port |
-| `CODEX_PROXY_PORT` | AgentBridge proxy port used by the Codex TUI |
-| `AGENTBRIDGE_MODE` | Claude delivery mode override: `push`, `pull`, or `auto` |
-| `AGENTBRIDGE_MAX_BUFFERED_MESSAGES` | Pull-mode queue bound and buffering limit |
-| `AGENTBRIDGE_FILTER_MODE` | Codex message filtering mode |
-| `AGENTBRIDGE_IDLE_SHUTDOWN_MS` | Daemon idle shutdown override |
-| `AGENTBRIDGE_ATTENTION_WINDOW_MS` | Claude attention-window override |
-
-## Where Phase 3 Landed Differently Than The Earlier Proposal
-
-Phase 3 shipped the intended product direction, but not every original proposal detail survived unchanged.
-
-### Shipped differently
-
-- The CLI exists, but the package is still repository-local today.
-  - `package.json` exposes the `agentbridge` bin, but the package is still marked `private`.
-- The command surface is more opinionated than the original generic lifecycle proposal.
-  - Shipped commands are `init`, `dev`, `claude`, `codex`, and `kill`.
-  - Proposed commands such as `doctor`, `status`, `start`, `stop`, and `attach` did not ship in Phase 3.
-- `init` generates project config and attempts plugin installation, but it does not rewrite global Claude configuration files.
-- Claude startup still uses the development-channel path instead of a stable marketplace `--channels` flow.
-- Delivery mode auto-detection is intentionally conservative.
-  - `auto` resolves to push mode today.
-  - API-key users can force pull mode with `AGENTBRIDGE_MODE=pull`.
-
-### Why those differences are acceptable for v1
-
-- The current command set matches the real user workflow more directly.
-- The daemon lifecycle is now precise enough that a generic `start` or `attach` command is not required for normal use.
-- Keeping `claude` and `codex` as explicit commands makes the startup contract easier to understand and test.
-- Explicit pull-mode override solves the practical API-key case without over-engineering capability negotiation.
-
-## Validation Shipped With Phase 3
-
-Phase 3 is backed by targeted automated coverage in the repository:
-
-- CLI helper and flag handling tests
-- config and lifecycle tests
-- daemon client tests
-- CLI end-to-end harness coverage for:
-  - `init`
-  - `claude`
-  - `codex`
-  - daemon reuse
-  - concurrent startup lock behavior
-  - `kill`
-  - killed-sentinel reconnect behavior
-
-## Remaining Follow-Ups After Phase 3
-
-Phase 3 is complete, but these items remain follow-up work rather than part of the shipped baseline:
-
-- publishing a non-private npm package
-- stabilizing marketplace packaging and plugin manifests
-- deciding whether `doctor` or `status` are still worth adding
-- replacing development-channel startup with a stable marketplace path when available
-- broader multi-session and multi-agent work, which remains v2+ scope
+- `GOSSIP_STATE_DIR`
+- `GOSSIP_CONTROL_PORT`
+- `GOSSIP_DAEMON_ENTRY`
+- `GOSSIP_MODE`
+- `GOSSIP_MAX_BUFFERED_MESSAGES`
+- `GOSSIP_FILTER_MODE`
+- `GOSSIP_IDLE_SHUTDOWN_MS`
+- `GOSSIP_ATTENTION_WINDOW_MS`
+- `CODEX_PROXY_PORT`

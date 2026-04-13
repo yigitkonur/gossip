@@ -1,8 +1,8 @@
-// Package control defines the wire protocol between the agentbridge bridge
+// Package control defines the wire protocol between the gossip bridge
 // (foreground MCP server) and daemon (background Codex proxy host).
 package control
 
-import "github.com/raysonmeng/agent-bridge/internal/protocol"
+import "github.com/yigitkonur/gossip/internal/protocol"
 
 // ClientMessage is a bridge-to-daemon message.
 type ClientMessage struct {

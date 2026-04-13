@@ -1,6 +1,6 @@
 .PHONY: build test vet lint tidy clean gen check
 
-BINARY := bin/agentbridge
+BINARY := bin/gossip
 PKG    := ./...
 GOBIN  := $(shell go env GOBIN)
 ifeq ($(GOBIN),)
@@ -8,7 +8,7 @@ ifeq ($(GOBIN),)
 endif
 
 build:
-	go build -trimpath -ldflags="-s -w -X main.version=$(shell git describe --tags --always --dirty 2>/dev/null || echo dev)" -o $(BINARY) ./cmd/agentbridge
+	go build -trimpath -ldflags="-s -w -X main.version=$(shell git describe --tags --always --dirty 2>/dev/null || echo dev)" -o $(BINARY) ./cmd/gossip
 
 test:
 	go test -race -count=1 $(PKG)

@@ -4,7 +4,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/raysonmeng/agent-bridge/internal/protocol"
+	"github.com/yigitkonur/gossip/internal/protocol"
 )
 
 func TestClassify_Markers(t *testing.T) {

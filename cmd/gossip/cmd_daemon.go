@@ -6,10 +6,10 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/raysonmeng/agent-bridge/internal/config"
-	"github.com/raysonmeng/agent-bridge/internal/daemon"
-	"github.com/raysonmeng/agent-bridge/internal/filter"
-	"github.com/raysonmeng/agent-bridge/internal/statedir"
+	"github.com/yigitkonur/gossip/internal/config"
+	"github.com/yigitkonur/gossip/internal/daemon"
+	"github.com/yigitkonur/gossip/internal/filter"
+	"github.com/yigitkonur/gossip/internal/statedir"
 	"github.com/spf13/cobra"
 )
 

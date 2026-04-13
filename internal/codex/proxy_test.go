@@ -9,7 +9,7 @@ import (
 	"time"
 
 	"github.com/coder/websocket"
-	"github.com/raysonmeng/agent-bridge/internal/protocol"
+	"github.com/yigitkonur/gossip/internal/protocol"
 )
 
 func TestProxy_AcceptsConnection(t *testing.T) {
@@ -26,8 +26,20 @@ func TestProxy_AcceptsConnection(t *testing.T) {
 	}
 	defer conn.Close(websocket.StatusNormalClosure, "")
 
-	if got := p.ConnectionCount(); got != 1 {
-		t.Errorf("ConnectionCount = %d, want 1", got)
+	waitForConnectionCount(t, p, 1)
+}
+
+func waitForConnectionCount(t *testing.T, p *Proxy, want int) {
+	t.Helper()
+	deadline := time.Now().Add(500 * time.Millisecond)
+	for time.Now().Before(deadline) {
+		if got := p.ConnectionCount(); got == want {
+			return
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	if got := p.ConnectionCount(); got != want {
+		t.Fatalf("ConnectionCount = %d, want %d", got, want)
 	}
 }
 

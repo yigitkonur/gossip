@@ -6,7 +6,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/raysonmeng/agent-bridge/internal/protocol"
+	"github.com/yigitkonur/gossip/internal/protocol"
 )
 
 func TestServer_ReplyTool_InvokesHandler(t *testing.T) {

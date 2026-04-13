@@ -5,8 +5,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/raysonmeng/agent-bridge/internal/codex"
-	"github.com/raysonmeng/agent-bridge/internal/filter"
+	"github.com/yigitkonur/gossip/internal/codex"
+	"github.com/yigitkonur/gossip/internal/filter"
 )
 
 type fakeTimer struct {

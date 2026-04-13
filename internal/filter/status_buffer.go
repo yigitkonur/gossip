@@ -5,7 +5,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/raysonmeng/agent-bridge/internal/protocol"
+	"github.com/yigitkonur/gossip/internal/protocol"
 )
 
 // StatusBufferOptions tunes a StatusBuffer.

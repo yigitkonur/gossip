@@ -1,6 +1,6 @@
 version: 2
 
-project_name: agentbridge
+project_name: gossip
 
 before:
   hooks:
@@ -8,9 +8,9 @@ before:
     - go vet ./...
 
 builds:
-  - id: agentbridge
-    main: ./cmd/agentbridge
-    binary: agentbridge
+  - id: gossip
+    main: ./cmd/gossip
+    binary: gossip
     env:
       - CGO_ENABLED=0
     goos:
@@ -26,7 +26,7 @@ builds:
 archives:
   - id: default
     formats: [tar.gz]
-    name_template: "agentbridge_{{ .Version }}_{{ .Os }}_{{ .Arch }}"
+    name_template: "gossip_{{ .Version }}_{{ .Os }}_{{ .Arch }}"
     files:
       - LICENSE
       - README.md

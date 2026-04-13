@@ -4,12 +4,12 @@ import (
 	"testing"
 	"time"
 
-	"github.com/raysonmeng/agent-bridge/internal/config"
-	"github.com/raysonmeng/agent-bridge/internal/statedir"
+	"github.com/yigitkonur/gossip/internal/config"
+	"github.com/yigitkonur/gossip/internal/statedir"
 )
 
 func TestDaemonOptionsFromConfig_UsesControlPortHelper(t *testing.T) {
-	t.Setenv("AGENTBRIDGE_CONTROL_PORT", "45123")
+	t.Setenv("GOSSIP_CONTROL_PORT", "45123")
 	sd := statedir.New(t.TempDir())
 	cfg := config.DefaultConfig
 	cfg.Daemon.Port = 4600

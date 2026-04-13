@@ -1,4 +1,4 @@
-module github.com/raysonmeng/agent-bridge
+module github.com/yigitkonur/gossip
 
 go 1.23.0
 

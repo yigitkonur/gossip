@@ -10,7 +10,7 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/raysonmeng/agent-bridge/internal/protocol"
+	"github.com/yigitkonur/gossip/internal/protocol"
 )
 
 // ServerOptions configures an MCP server.
@@ -63,7 +63,7 @@ type Server struct {
 // NewServer constructs a server.
 func NewServer(opts ServerOptions) *Server {
 	if opts.Name == "" {
-		opts.Name = "agentbridge"
+		opts.Name = "gossip"
 	}
 	if opts.Version == "" {
 		opts.Version = "0.2.0"

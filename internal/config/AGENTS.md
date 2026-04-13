@@ -3,7 +3,7 @@
 This file applies to `internal/config/`.
 
 ## What this folder is
-- This folder owns the project-local `.agentbridge/` configuration.
+- This folder owns the project-local `.gossip/` configuration.
 - It creates and reads `config.json` and `collaboration.md` inside a project.
 
 ## When editing here

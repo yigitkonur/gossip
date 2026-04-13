@@ -7,7 +7,7 @@ import (
 )
 
 func controlPort() int {
-	if raw := os.Getenv("AGENTBRIDGE_CONTROL_PORT"); raw != "" {
+	if raw := os.Getenv("GOSSIP_CONTROL_PORT"); raw != "" {
 		if n, err := strconv.Atoi(raw); err == nil && n > 0 {
 			return n
 		}

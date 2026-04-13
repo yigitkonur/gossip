@@ -5,10 +5,10 @@ import (
 	"testing"
 	"time"
 
-	"github.com/raysonmeng/agent-bridge/internal/codex"
-	"github.com/raysonmeng/agent-bridge/internal/control"
-	"github.com/raysonmeng/agent-bridge/internal/filter"
-	"github.com/raysonmeng/agent-bridge/internal/protocol"
+	"github.com/yigitkonur/gossip/internal/codex"
+	"github.com/yigitkonur/gossip/internal/control"
+	"github.com/yigitkonur/gossip/internal/filter"
+	"github.com/yigitkonur/gossip/internal/protocol"
 )
 
 func TestDaemon_OnClaudeToCodex_RejectsWhenNotReady(t *testing.T) {

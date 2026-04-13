@@ -5,7 +5,7 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/raysonmeng/agent-bridge/internal/protocol"
+	"github.com/yigitkonur/gossip/internal/protocol"
 )
 
 // PushMessage delivers a Codex message to Claude.

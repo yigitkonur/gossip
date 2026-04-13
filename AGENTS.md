@@ -3,9 +3,9 @@
 This file applies to the whole repository unless a deeper `AGENTS.md` overrides it.
 
 ## What this project is
-- AgentBridge is a local bridge between **Claude Code** and **Codex**.
+- Gossip is a local bridge between **Claude Code** and **Codex**.
 - The **Go code is the real implementation now**.
-- The `ts-legacy/` tree is the archived TypeScript/Bun version kept for reference.
+- The `ts-legacy/` tree is an archived reference implementation.
 
 ## How to work here
 - Start with `README.md` for the big picture.
@@ -28,7 +28,7 @@ This file applies to the whole repository unless a deeper `AGENTS.md` overrides 
 - If the change affects the release path, also run the GoReleaser snapshot build.
 
 ## Beginner mental model
-- `cmd/agentbridge` = the commands a human runs.
+- `cmd/gossip` = the commands a human runs.
 - `internal/codex` = talks to Codex and its TUI.
 - `internal/mcp` = talks to Claude Code.
 - `internal/control` + `internal/daemon` = keep the background bridge alive and coordinated.

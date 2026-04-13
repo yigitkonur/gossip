@@ -1,4 +1,4 @@
-// Package statedir resolves the shared runtime state directory for AgentBridge.
+// Package statedir resolves the shared runtime state directory for Gossip.
 package statedir
 
 import (
@@ -12,12 +12,12 @@ type StateDir struct {
 	dir string
 }
 
-// New resolves the state directory, honoring AGENTBRIDGE_STATE_DIR and XDG.
+// New resolves the state directory, honoring GOSSIP_STATE_DIR and XDG.
 func New(override string) *StateDir {
 	var dir string
 	if override != "" {
 		dir = override
-	} else if envOverride := os.Getenv("AGENTBRIDGE_STATE_DIR"); envOverride != "" {
+	} else if envOverride := os.Getenv("GOSSIP_STATE_DIR"); envOverride != "" {
 		dir = envOverride
 	} else {
 		home, err := os.UserHomeDir()
@@ -25,13 +25,13 @@ func New(override string) *StateDir {
 			home = os.TempDir()
 		}
 		if runtime.GOOS == "darwin" {
-			dir = filepath.Join(home, "Library", "Application Support", "AgentBridge")
+			dir = filepath.Join(home, "Library", "Application Support", "Gossip")
 		} else {
 			xdg := os.Getenv("XDG_STATE_HOME")
 			if xdg == "" {
 				xdg = filepath.Join(home, ".local", "state")
 			}
-			dir = filepath.Join(xdg, "agentbridge")
+			dir = filepath.Join(xdg, "gossip")
 		}
 	}
 	return &StateDir{dir: dir}
@@ -53,7 +53,7 @@ func (s *StateDir) LockFile() string { return filepath.Join(s.dir, "daemon.lock"
 func (s *StateDir) StatusFile() string { return filepath.Join(s.dir, "status.json") }
 
 // LogFile returns the combined log file path.
-func (s *StateDir) LogFile() string { return filepath.Join(s.dir, "agentbridge.log") }
+func (s *StateDir) LogFile() string { return filepath.Join(s.dir, "gossip.log") }
 
 // KilledFile returns the sentinel indicating intentional shutdown.
 func (s *StateDir) KilledFile() string { return filepath.Join(s.dir, "killed") }

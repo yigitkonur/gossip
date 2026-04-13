@@ -8,7 +8,7 @@ import (
 	"sync/atomic"
 
 	"github.com/coder/websocket"
-	"github.com/raysonmeng/agent-bridge/internal/protocol"
+	"github.com/yigitkonur/gossip/internal/protocol"
 )
 
 type pendingServerRequest struct {

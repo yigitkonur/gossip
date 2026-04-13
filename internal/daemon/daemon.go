@@ -12,12 +12,12 @@ import (
 
 	"golang.org/x/sync/errgroup"
 
-	"github.com/raysonmeng/agent-bridge/internal/codex"
-	"github.com/raysonmeng/agent-bridge/internal/control"
-	"github.com/raysonmeng/agent-bridge/internal/filter"
-	"github.com/raysonmeng/agent-bridge/internal/protocol"
-	"github.com/raysonmeng/agent-bridge/internal/statedir"
-	"github.com/raysonmeng/agent-bridge/internal/tui"
+	"github.com/yigitkonur/gossip/internal/codex"
+	"github.com/yigitkonur/gossip/internal/control"
+	"github.com/yigitkonur/gossip/internal/filter"
+	"github.com/yigitkonur/gossip/internal/protocol"
+	"github.com/yigitkonur/gossip/internal/statedir"
+	"github.com/yigitkonur/gossip/internal/tui"
 )
 
 type stopTimer interface {
@@ -260,7 +260,7 @@ func (d *Daemon) handleCodexEvent(ctx context.Context, ev codex.Event) {
 		}
 	case codex.EventProcessExit:
 		d.tuiState.HandleCodexExit()
-		d.broadcastSystem(ctx, "system_codex_exit", "⚠️ Codex app-server exited. AgentBridge daemon is still running, but Codex needs to be restarted.")
+		d.broadcastSystem(ctx, "system_codex_exit", "⚠️ Codex app-server exited. Gossip daemon is still running, but Codex needs to be restarted.")
 	}
 }
 
@@ -287,7 +287,7 @@ func (d *Daemon) scheduleIdleShutdown() {
 		}
 		d.idleShutdownTimer = nil
 		attached := d.claudeAttached
-		cancel := d.runCancel          // read under stateMu
+		cancel := d.runCancel // read under stateMu
 		d.stateMu.Unlock()
 		if attached {
 			return
@@ -333,7 +333,7 @@ func (d *Daemon) scheduleClaudeDisconnectNotification() {
 		if attached || !d.tuiState.CanReply() || !onlineNoticeSent || codexClient == nil {
 			return
 		}
-		_, _ = codexClient.InjectMessage(context.Background(), "⚠️ Claude Code went offline. AgentBridge is still running in the background; it will reconnect automatically when Claude reopens.")
+		_, _ = codexClient.InjectMessage(context.Background(), "⚠️ Claude Code went offline. Gossip is still running in the background; it will reconnect automatically when Claude reopens.")
 		d.stateMu.Lock()
 		d.claudeOnlineNoticeSent = false
 		d.claudeOfflineNoticeShown = true
