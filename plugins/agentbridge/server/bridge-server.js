@@ -13919,7 +13919,6 @@ class DaemonClient extends EventEmitter2 {
   ws = null;
   wsId = 0;
   nextRequestId = 1;
-  connectedAt = null;
   logFile;
   verbose;
   pendingReplies = new Map;
@@ -13960,9 +13959,9 @@ class DaemonClient extends EventEmitter2 {
         settled = true;
         this.ws = ws;
         this.wsId = socketId;
-        this.connectedAt = Date.now();
-        this.attachSocketHandlers(ws, socketId);
-        this.log(`ws#${socketId} opened and attached (connect took ${Date.now() - attemptStart}ms)`);
+        const openedAt = Date.now();
+        this.attachSocketHandlers(ws, socketId, openedAt);
+        this.log(`ws#${socketId} opened and attached (connect took ${openedAt - attemptStart}ms)`);
         resolve();
       };
       ws.onerror = (event) => {
@@ -14016,7 +14015,7 @@ class DaemonClient extends EventEmitter2 {
       });
     });
   }
-  attachSocketHandlers(ws, socketId) {
+  attachSocketHandlers(ws, socketId, openedAt) {
     ws.onmessage = (event) => {
       const raw = typeof event.data === "string" ? event.data : event.data.toString();
       let message;
@@ -14045,12 +14044,11 @@ class DaemonClient extends EventEmitter2 {
     };
     ws.onclose = (event) => {
       const isCurrent = this.ws === ws;
-      const uptimeMs = this.connectedAt ? Date.now() - this.connectedAt : 0;
-      const uptime = this.connectedAt ? `${(uptimeMs / 1000).toFixed(1)}s` : "n/a";
+      const uptimeMs = Date.now() - openedAt;
+      const uptime = `${(uptimeMs / 1000).toFixed(1)}s`;
       this.log(`ws#${socketId} onclose (code=${event.code}, reason=${event.reason || "none"}, clean=${event.wasClean}, uptime=${uptime}, isCurrent=${isCurrent}, currentWsId=${this.wsId}, pendingReplies=${this.pendingReplies.size})`);
       if (isCurrent) {
         this.ws = null;
-        this.connectedAt = null;
         this.rejectPendingReplies("AgentBridge daemon disconnected.");
         this.emit("disconnect", { code: event.code, reason: event.reason || "", uptimeMs });
       }

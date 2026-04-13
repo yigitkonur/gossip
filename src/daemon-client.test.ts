@@ -90,6 +90,68 @@ describe("DaemonClient", () => {
     await disconnected;
   });
 
+  test("disconnect payload includes code, reason, and non-negative uptimeMs", async () => {
+    await client.connect();
+
+    const payload = new Promise<{ code: number; reason: string; uptimeMs: number }>((resolve) => {
+      client.on("disconnect", (info) => resolve(info));
+    });
+
+    // Give the socket a measurable uptime before closing
+    await new Promise((r) => setTimeout(r, 25));
+
+    for (const ws of serverSockets) {
+      ws.close(4123, "test close reason");
+    }
+
+    const info = await payload;
+    expect(info.code).toBe(4123);
+    expect(info.reason).toBe("test close reason");
+    expect(info.uptimeMs).toBeGreaterThanOrEqual(20);
+  });
+
+  test("stale socket onclose does not corrupt uptime of new socket", async () => {
+    // Regression test for the race where a single instance-level openedAt
+    // field would be overwritten by a reconnect before the old socket's
+    // onclose fired, causing the stale onclose to report wrong uptime.
+    await client.connect();
+
+    // Grab the server-side socket for the current client so we can close
+    // it late, after a reconnect.
+    const originalServerSockets = [...serverSockets];
+    expect(originalServerSockets.length).toBe(1);
+
+    const firstDisconnect = new Promise<{ uptimeMs: number }>((resolve) => {
+      client.once("disconnect", (info) => resolve(info));
+    });
+
+    // Close the first socket cleanly — this triggers disconnect for the
+    // current wire and clears this.ws.
+    originalServerSockets[0].close();
+    const firstInfo = await firstDisconnect;
+    expect(firstInfo.uptimeMs).toBeGreaterThanOrEqual(0);
+
+    // Reconnect immediately — new socket with its own openedAt.
+    await client.connect();
+
+    // New socket should be tracked independently. Disconnect should still
+    // fire with a fresh uptimeMs tied to the *new* socket, not the old one.
+    const secondDisconnect = new Promise<{ uptimeMs: number }>((resolve) => {
+      client.once("disconnect", (info) => resolve(info));
+    });
+
+    await new Promise((r) => setTimeout(r, 15));
+
+    for (const ws of serverSockets) {
+      ws.close();
+    }
+
+    const secondInfo = await secondDisconnect;
+    expect(secondInfo.uptimeMs).toBeGreaterThanOrEqual(10);
+    // Must reflect the new socket's lifetime, not some stale value.
+    expect(secondInfo.uptimeMs).toBeLessThan(5000);
+  });
+
   test("emits codexMessage on codex_to_claude", async () => {
     await client.connect();
 

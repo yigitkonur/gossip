@@ -20,7 +20,6 @@ export class DaemonClient extends EventEmitter<DaemonClientEvents> {
   private ws: WebSocket | null = null;
   private wsId: number = 0; // Track socket identity for debugging
   private nextRequestId = 1;
-  private connectedAt: number | null = null;
   private readonly logFile?: string;
   private readonly verbose: boolean;
   private pendingReplies = new Map<
@@ -71,9 +70,9 @@ export class DaemonClient extends EventEmitter<DaemonClientEvents> {
         settled = true;
         this.ws = ws;
         this.wsId = socketId;
-        this.connectedAt = Date.now();
-        this.attachSocketHandlers(ws, socketId);
-        this.log(`ws#${socketId} opened and attached (connect took ${Date.now() - attemptStart}ms)`);
+        const openedAt = Date.now();
+        this.attachSocketHandlers(ws, socketId, openedAt);
+        this.log(`ws#${socketId} opened and attached (connect took ${openedAt - attemptStart}ms)`);
         resolve();
       };
 
@@ -137,7 +136,7 @@ export class DaemonClient extends EventEmitter<DaemonClientEvents> {
     });
   }
 
-  private attachSocketHandlers(ws: WebSocket, socketId: number) {
+  private attachSocketHandlers(ws: WebSocket, socketId: number, openedAt: number) {
     ws.onmessage = (event) => {
       const raw = typeof event.data === "string" ? event.data : event.data.toString();
 
@@ -168,14 +167,15 @@ export class DaemonClient extends EventEmitter<DaemonClientEvents> {
 
     ws.onclose = (event) => {
       const isCurrent = this.ws === ws;
-      const uptimeMs = this.connectedAt ? Date.now() - this.connectedAt : 0;
-      const uptime = this.connectedAt ? `${(uptimeMs / 1000).toFixed(1)}s` : "n/a";
+      // Uptime is captured per-socket via closure so stale/replaced sockets
+      // can't read a newer socket's open time if their onclose fires late.
+      const uptimeMs = Date.now() - openedAt;
+      const uptime = `${(uptimeMs / 1000).toFixed(1)}s`;
       this.log(
         `ws#${socketId} onclose (code=${event.code}, reason=${event.reason || "none"}, clean=${event.wasClean}, uptime=${uptime}, isCurrent=${isCurrent}, currentWsId=${this.wsId}, pendingReplies=${this.pendingReplies.size})`,
       );
       if (isCurrent) {
         this.ws = null;
-        this.connectedAt = null;
         this.rejectPendingReplies("AgentBridge daemon disconnected.");
         this.emit("disconnect", { code: event.code, reason: event.reason || "", uptimeMs });
       }
