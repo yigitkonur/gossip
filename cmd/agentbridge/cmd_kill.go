@@ -28,6 +28,16 @@ func newKillCmd() *cobra.Command {
 			if b, err := os.ReadFile(sd.TuiPidFile()); err == nil {
 				if pid, err := strconv.Atoi(strings.TrimSpace(string(b))); err == nil && daemon.IsProcessAlive(pid) && isManagedCodexProcess(pid) {
 					_ = syscall.Kill(pid, syscall.SIGTERM)
+					deadline := time.Now().Add(3 * time.Second)
+					for time.Now().Before(deadline) {
+						if !daemon.IsProcessAlive(pid) {
+							break
+						}
+						time.Sleep(200 * time.Millisecond)
+					}
+					if daemon.IsProcessAlive(pid) {
+						_ = syscall.Kill(pid, syscall.SIGKILL)
+					}
 				}
 				_ = os.Remove(sd.TuiPidFile())
 			}

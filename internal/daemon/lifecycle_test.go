@@ -46,3 +46,16 @@ func TestLifecycle_PidFile(t *testing.T) {
 		t.Error("ReadPid after RemovePid should be 0")
 	}
 }
+
+func TestLifecycle_AcquireLock_RemovesStaleLock(t *testing.T) {
+	sd := statedir.New(t.TempDir())
+	_ = sd.Ensure()
+	l := NewLifecycle(LifecycleOptions{StateDir: sd, ControlPort: 4502})
+	if err := os.WriteFile(sd.LockFile(), []byte("999999\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if !l.acquireLock() {
+		t.Fatal("expected acquireLock to recover stale lock")
+	}
+	l.releaseLock()
+}

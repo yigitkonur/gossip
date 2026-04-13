@@ -213,12 +213,15 @@ func (c *Client) dispatchNotification(n jsonrpc.Notification) {
 		if turnID == "" {
 			turnID = p.TurnID
 		}
+		wasInProgress := c.TurnInProgress()
 		c.markTurnStarted(turnID)
-		threadID := p.ThreadID
-		if threadID == "" {
-			threadID = c.ActiveThreadID()
+		if !wasInProgress {
+			threadID := p.ThreadID
+			if threadID == "" {
+				threadID = c.ActiveThreadID()
+			}
+			c.emit(Event{Kind: EventTurnStarted, ThreadID: threadID, TurnID: turnID})
 		}
-		c.emit(Event{Kind: EventTurnStarted, ThreadID: threadID, TurnID: turnID})
 	case protocol.MethodTurnCompleted:
 		var p protocol.TurnCompletedParams
 		if err := json.Unmarshal(n.Params, &p); err != nil {
@@ -276,11 +279,9 @@ func (c *Client) finalizeItem(p protocol.ItemCompletedParams) {
 		delete(c.agentMessageBufs, key)
 	}
 	c.agentMessageMu.Unlock()
-	text := ""
-	if ok && buf.Len() > 0 {
+	text := extractItemContent(p.Item)
+	if text == "" && ok && buf.Len() > 0 {
 		text = buf.String()
-	} else {
-		text = extractItemContent(p.Item)
 	}
 	if text == "" {
 		return

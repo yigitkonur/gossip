@@ -215,12 +215,27 @@ func (l *Lifecycle) waitReady(ctx context.Context) error {
 func (l *Lifecycle) acquireLock() bool {
 	l.opts.StateDir.Ensure()
 	f, err := os.OpenFile(l.opts.StateDir.LockFile(), os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0o644)
-	if err != nil {
+	if err == nil {
+		_, _ = f.WriteString(strconv.Itoa(os.Getpid()) + "\n")
+		_ = f.Close()
+		return true
+	}
+	b, readErr := os.ReadFile(l.opts.StateDir.LockFile())
+	if readErr != nil {
 		return false
 	}
-	_, _ = f.WriteString(strconv.Itoa(os.Getpid()) + "\n")
-	_ = f.Close()
-	return true
+	pid, convErr := strconv.Atoi(string(bytesTrimSpace(b)))
+	if convErr != nil || !IsProcessAlive(pid) {
+		l.releaseLock()
+		f, err = os.OpenFile(l.opts.StateDir.LockFile(), os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0o644)
+		if err != nil {
+			return false
+		}
+		_, _ = f.WriteString(strconv.Itoa(os.Getpid()) + "\n")
+		_ = f.Close()
+		return true
+	}
+	return false
 }
 
 func (l *Lifecycle) releaseLock() { _ = os.Remove(l.opts.StateDir.LockFile()) }
