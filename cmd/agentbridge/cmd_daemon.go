@@ -43,16 +43,7 @@ func newDaemonCmd() *cobra.Command {
 
 			ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 			defer stop()
-
-			d := daemon.New(daemon.Options{
-				StateDir:     sd,
-				AppPort:      cfg.Daemon.Port,
-				ProxyPort:    cfg.Daemon.ProxyPort,
-				ControlPort:  4502,
-				FilterMode:   filter.ModeFiltered,
-				Logger:       logToStderr,
-				IdleShutdown: time.Duration(cfg.IdleShutdownSeconds) * time.Second,
-			})
+			d := daemon.New(daemonOptionsFromConfig(sd, cfg))
 			return d.Run(ctx)
 		},
 	}
