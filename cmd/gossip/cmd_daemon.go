@@ -25,7 +25,7 @@ func daemonOptionsFromConfig(sd *statedir.StateDir, cfg config.Config) daemon.Op
 		FilterMode:      filter.ModeFiltered,
 		AttentionWindow: attentionWindowFromConfig(cfg),
 		Logger:          logToStderr,
-		IdleShutdown:    time.Duration(cfg.IdleShutdownSeconds) * time.Second,
+		IdleShutdown:    idleShutdownFromConfig(cfg),
 	}
 }
 
@@ -41,6 +41,17 @@ func attentionWindowFromConfig(cfg config.Config) time.Duration {
 		return time.Duration(cfg.TurnCoordination.AttentionWindowSeconds) * time.Second
 	}
 	return 15 * time.Second
+}
+
+func idleShutdownFromConfig(cfg config.Config) time.Duration {
+	for _, key := range []string{"GOSSIP_IDLE_SHUTDOWN_MS", "AGENTBRIDGE_IDLE_SHUTDOWN_MS"} {
+		if raw := os.Getenv(key); raw != "" {
+			if n, err := strconv.Atoi(raw); err == nil && n > 0 {
+				return time.Duration(n) * time.Millisecond
+			}
+		}
+	}
+	return time.Duration(cfg.IdleShutdownSeconds) * time.Second
 }
 
 func daemonFilterMode(logger func(string)) filter.Mode {
