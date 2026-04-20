@@ -24,6 +24,7 @@ import (
 const (
 	attachStatusCooldown = 30 * time.Second
 	codexStopTimeout     = 3 * time.Second
+	turnStartedMessage   = "⏳ Codex is working on the current task. Wait for completion before sending a reply."
 )
 
 type messageTemplates struct {
@@ -289,7 +290,7 @@ func (d *Daemon) handleCodexEvent(ctx context.Context, ev codex.Event) {
 		d.bridgeReadyAt.Store(time.Now().UnixMilli())
 		d.broadcastSystem(ctx, "system_ready", d.currentReadyMessage(ev.ThreadID))
 	case codex.EventTurnStarted:
-		d.broadcastSystem(ctx, "system_turn_started", "⏳ Codex is working on the current task.")
+		d.broadcastSystem(ctx, "system_turn_started", turnStartedMessage)
 	case codex.EventTurnCompleted:
 		d.statusBuf.Flush("turn completed")
 		d.stateMu.Lock()

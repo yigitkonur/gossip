@@ -92,6 +92,12 @@ func TestDaemon_MessageTemplatesSupportOverrides(t *testing.T) {
 	}
 }
 
+func TestTurnStartedMessageMatchesTS(t *testing.T) {
+	if turnStartedMessage != "⏳ Codex is working on the current task. Wait for completion before sending a reply." {
+		t.Fatalf("turnStartedMessage = %q", turnStartedMessage)
+	}
+}
+
 func TestDaemon_ShouldEmitAttachStatus_UsesCooldownAndBufferedGate(t *testing.T) {
 	d := New(Options{})
 	now := time.Unix(100, 0)
