@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"net/http"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -315,6 +316,7 @@ func (p *Proxy) HandleUpstreamMessage(ctx context.Context, payload []byte) {
 		if !ok || id < 0 {
 			return
 		}
+		payload, env = p.patchRateLimitsError(payload, env)
 		p.completePendingClientRequest(id, env)
 		conn, orig, found := p.ids.Resolve(id)
 		if !found || !p.isCurrentConn(conn) {
@@ -331,6 +333,57 @@ func (p *Proxy) HandleUpstreamMessage(ctx context.Context, payload []byte) {
 		if !p.sendServerRequest(ctx, payload, env.ID, env.Method) {
 			p.bufferServerRequest(payload, env.ID, env.Method)
 		}
+	}
+}
+
+func (p *Proxy) patchRateLimitsError(payload []byte, env protocol.Envelope) ([]byte, protocol.Envelope) {
+	if env.Error == nil || len(env.ID) == 0 {
+		return payload, env
+	}
+	errMsg := env.Error.Message
+	if !strings.Contains(errMsg, "rate limits") && !strings.Contains(errMsg, "rateLimits") {
+		return payload, env
+	}
+
+	var rawID any
+	if err := json.Unmarshal(env.ID, &rawID); err != nil {
+		return payload, env
+	}
+
+	patched, err := json.Marshal(map[string]any{
+		"id": rawID,
+		"result": map[string]any{
+			"rateLimits": map[string]any{
+				"limitId":   nil,
+				"limitName": nil,
+				"primary": map[string]any{
+					"usedPercent":        0,
+					"windowDurationMins": 60,
+					"resetsAt":           nil,
+				},
+				"secondary": nil,
+				"credits":   nil,
+				"planType":  nil,
+			},
+			"rateLimitsByLimitId": nil,
+		},
+	})
+	if err != nil {
+		return payload, env
+	}
+
+	var patchedEnv protocol.Envelope
+	if err := json.Unmarshal(patched, &patchedEnv); err != nil {
+		return payload, env
+	}
+
+	p.debugLog("patching rateLimits error with mock success")
+	return patched, patchedEnv
+}
+
+func (p *Proxy) debugLog(msg string) {
+	if p.upstream != nil && p.upstream.opts.Logger != nil {
+		p.upstream.opts.Logger(msg)
 	}
 }
 

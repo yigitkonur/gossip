@@ -156,6 +156,59 @@ func TestProxy_ThreadResumeDropsOrphanPendingClientRequests(t *testing.T) {
 	}
 }
 
+func TestProxy_PatchesRateLimitsErrorsWithMockSuccess(t *testing.T) {
+	p := NewProxy(nil)
+	srv := httptest.NewServer(p)
+	defer srv.Close()
+
+	wsURL := "ws" + strings.TrimPrefix(srv.URL, "http")
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	conn, _, err := websocket.Dial(ctx, wsURL, nil)
+	if err != nil {
+		t.Fatalf("dial: %v", err)
+	}
+	defer conn.Close(websocket.StatusNormalClosure, "")
+
+	waitForConnectionCount(t, p, 1)
+	current, ok := p.currentConn()
+	if !ok {
+		t.Fatal("expected primary TUI connection")
+	}
+
+	p.forwardToUpstream(ctx, current, []byte(`{"jsonrpc":"2.0","id":21,"method":"thread/list","params":{}}`))
+	p.HandleUpstreamMessage(ctx, []byte(`{"jsonrpc":"2.0","id":100000,"error":{"message":"startup rateLimits unavailable"}}`))
+
+	_, payload, err := conn.Read(ctx)
+	if err != nil {
+		t.Fatalf("read patched response: %v", err)
+	}
+
+	var decoded struct {
+		ID     int64 `json:"id"`
+		Result struct {
+			RateLimits struct {
+				LimitID   any `json:"limitId"`
+				LimitName any `json:"limitName"`
+				Primary   struct {
+					UsedPercent        int `json:"usedPercent"`
+					WindowDurationMins int `json:"windowDurationMins"`
+				} `json:"primary"`
+			} `json:"rateLimits"`
+			RateLimitsByLimitID any `json:"rateLimitsByLimitId"`
+		} `json:"result"`
+	}
+	if err := json.Unmarshal(payload, &decoded); err != nil {
+		t.Fatalf("unmarshal patched response: %v", err)
+	}
+	if decoded.ID != 21 {
+		t.Fatalf("patched response id = %d, want 21", decoded.ID)
+	}
+	if decoded.Result.RateLimits.Primary.UsedPercent != 0 || decoded.Result.RateLimits.Primary.WindowDurationMins != 60 {
+		t.Fatalf("unexpected patched primary rate limits: %+v", decoded.Result.RateLimits.Primary)
+	}
+}
+
 func TestProxy_ServerRequestBufferedUntilCurrentTUIConnects(t *testing.T) {
 	p := NewProxy(nil)
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
