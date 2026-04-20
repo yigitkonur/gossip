@@ -114,7 +114,7 @@ func New(opts Options) *Daemon {
 	}
 	d := &Daemon{opts: opts, filter: opts.FilterMode, afterFunc: defaultAfterFunc}
 	d.messageTemplates = messageTemplates{
-		ready:   "✅ Codex bridge ready (thread {thread_id})",
+		ready:   "✅ Codex TUI connected ({thread_id}). Bridge ready.",
 		waiting: fmt.Sprintf("⏳ Waiting for Codex TUI to connect. Run in another terminal:\ncodex --enable tui_app_server --remote ws://127.0.0.1:%d", opts.ProxyPort),
 	}
 	d.tuiState = tui.NewState(tui.Options{

@@ -74,7 +74,7 @@ func TestDaemon_AttentionWindowPausesStatusFlushesUntilExpiry(t *testing.T) {
 
 func TestDaemon_MessageTemplatesSupportOverrides(t *testing.T) {
 	d := New(Options{ProxyPort: 4601})
-	if got := d.currentReadyMessage("thread_123"); got != "✅ Codex bridge ready (thread thread_123)" {
+	if got := d.currentReadyMessage("thread_123"); got != "✅ Codex TUI connected (thread_123). Bridge ready." {
 		t.Fatalf("currentReadyMessage() = %q", got)
 	}
 	if got := d.currentWaitingMessage(); got != "⏳ Waiting for Codex TUI to connect. Run in another terminal:\ncodex --enable tui_app_server --remote ws://127.0.0.1:4601" {
