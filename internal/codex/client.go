@@ -31,8 +31,9 @@ type Client struct {
 	rpc    *jsonrpc.Client
 	proxy  *Proxy
 
-	threadID       atomic.Value
-	turnInProgress atomic.Bool
+	threadID         atomic.Value
+	initializeResult atomic.Value // json.RawMessage — cached for proxy-level reply to duplicate TUI initializes
+	turnInProgress   atomic.Bool
 
 	agentMessageMu   sync.Mutex
 	agentMessageBufs map[string]*strings.Builder
@@ -195,8 +196,23 @@ func (c *Client) initialize(ctx context.Context) error {
 	}
 	callCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
 	defer cancel()
-	_, err := c.rpc.Call(callCtx, protocol.MethodInitialize, params)
-	return err
+	result, err := c.rpc.Call(callCtx, protocol.MethodInitialize, params)
+	if err != nil {
+		return err
+	}
+	if len(result) > 0 {
+		c.initializeResult.Store(append(json.RawMessage(nil), result...))
+	}
+	return nil
+}
+
+// InitializeResult returns the cached initialize response result from the upstream
+// app-server, or nil if the call has not completed yet. The proxy uses it to reply
+// to duplicate TUI initialize requests so secondary TUI sessions don't see the
+// upstream's "Already initialized" error.
+func (c *Client) InitializeResult() json.RawMessage {
+	v, _ := c.initializeResult.Load().(json.RawMessage)
+	return v
 }
 
 func (c *Client) startThread(ctx context.Context) error {

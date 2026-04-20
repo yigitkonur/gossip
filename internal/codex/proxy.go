@@ -339,6 +339,7 @@ func (p *Proxy) HandleUpstreamMessage(ctx context.Context, payload []byte) {
 		if !ok || id < 0 {
 			return
 		}
+		payload, env = p.patchInitializeAlreadyError(id, payload, env)
 		payload, env = p.patchRateLimitsError(payload, env)
 		p.completePendingClientRequest(id, env)
 		conn, orig, found := p.ids.Resolve(id)
@@ -357,6 +358,55 @@ func (p *Proxy) HandleUpstreamMessage(ctx context.Context, payload []byte) {
 			p.bufferServerRequest(payload, env.ID, env.Method, env.Params)
 		}
 	}
+}
+
+// patchInitializeAlreadyError rewrites the upstream app-server's "Already initialized"
+// error for a TUI-initiated initialize into a success response. gossip's primary
+// TUI piggybacks on the daemon's already-initialized upstream WS, so a fresh
+// TUI sees that error on first connect and aborts. We replay the cached
+// initialize result the daemon received, which matches what a fresh
+// session-scoped initialize would have returned.
+func (p *Proxy) patchInitializeAlreadyError(proxyID int64, payload []byte, env protocol.Envelope) ([]byte, protocol.Envelope) {
+	if env.Error == nil || len(env.ID) == 0 {
+		return payload, env
+	}
+	if !strings.Contains(env.Error.Message, "Already initialized") {
+		return payload, env
+	}
+	p.mu.Lock()
+	pending, ok := p.pendingClient[proxyID]
+	p.mu.Unlock()
+	if !ok || pending.method != protocol.MethodInitialize {
+		return payload, env
+	}
+	if p.upstream == nil {
+		return payload, env
+	}
+	cached := p.upstream.InitializeResult()
+	if len(cached) == 0 {
+		return payload, env
+	}
+	var rawID any
+	if err := json.Unmarshal(env.ID, &rawID); err != nil {
+		return payload, env
+	}
+	var resultAny any
+	if err := json.Unmarshal(cached, &resultAny); err != nil {
+		return payload, env
+	}
+	patched, err := json.Marshal(map[string]any{
+		"id":     rawID,
+		"result": resultAny,
+	})
+	if err != nil {
+		return payload, env
+	}
+	var patchedEnv protocol.Envelope
+	if err := json.Unmarshal(patched, &patchedEnv); err != nil {
+		return payload, env
+	}
+	p.debugLog("patching initialize Already-initialized error with cached success")
+	return patched, patchedEnv
 }
 
 func (p *Proxy) patchRateLimitsError(payload []byte, env protocol.Envelope) ([]byte, protocol.Envelope) {
