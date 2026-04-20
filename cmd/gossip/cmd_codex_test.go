@@ -4,15 +4,92 @@ import (
 	"context"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"reflect"
 	"strings"
 	"testing"
+	"time"
 )
 
 func TestNewCodexCmd_DisablesFlagParsing(t *testing.T) {
 	cmd := newCodexCmd()
 	if !cmd.DisableFlagParsing {
 		t.Fatal("codex command should disable Cobra flag parsing so native Codex flags pass through")
+	}
+}
+
+func TestWithTerminalStateGuard_RestoresOnRunExit(t *testing.T) {
+	prevCapture := captureTerminalState
+	prevRestore := restoreTerminalState
+	prevSignal := codexSignalNotifyContext
+	defer func() {
+		captureTerminalState = prevCapture
+		restoreTerminalState = prevRestore
+		codexSignalNotifyContext = prevSignal
+	}()
+
+	restored := 0
+	captureTerminalState = func() (string, error) { return "saved", nil }
+	restoreTerminalState = func(state string) error {
+		restored++
+		if state != "saved" {
+			t.Fatalf("restore state = %q", state)
+		}
+		return nil
+	}
+	codexSignalNotifyContext = func(parent context.Context, _ ...os.Signal) (context.Context, context.CancelFunc) {
+		return context.WithCancel(parent)
+	}
+
+	if err := withTerminalStateGuard(func() error { return nil }); err != nil {
+		t.Fatalf("withTerminalStateGuard() error = %v", err)
+	}
+	if restored != 1 {
+		t.Fatalf("restore count = %d, want 1", restored)
+	}
+}
+
+func TestWithTerminalStateGuard_RestoresOnSignal(t *testing.T) {
+	prevCapture := captureTerminalState
+	prevRestore := restoreTerminalState
+	prevSignal := codexSignalNotifyContext
+	defer func() {
+		captureTerminalState = prevCapture
+		restoreTerminalState = prevRestore
+		codexSignalNotifyContext = prevSignal
+	}()
+
+	signalCtx, signalCancel := context.WithCancel(context.Background())
+	restored := make(chan string, 1)
+	captureTerminalState = func() (string, error) { return "saved", nil }
+	restoreTerminalState = func(state string) error {
+		restored <- state
+		return nil
+	}
+	codexSignalNotifyContext = func(parent context.Context, _ ...os.Signal) (context.Context, context.CancelFunc) {
+		return signalCtx, func() {}
+	}
+
+	done := make(chan error, 1)
+	go func() {
+		done <- withTerminalStateGuard(func() error {
+			signalCancel()
+			select {
+			case <-restored:
+				return nil
+			case <-time.After(time.Second):
+				return context.DeadlineExceeded
+			}
+		})
+	}()
+
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("withTerminalStateGuard() error = %v", err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for terminal guard")
 	}
 }
 
