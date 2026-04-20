@@ -23,9 +23,10 @@ type pendingServerRequest struct {
 }
 
 type pendingClientRequest struct {
-	conn     connID
-	method   string
-	threadID string
+	conn       connID
+	method     string
+	threadID   string
+	clientInfo *protocol.ClientInfo // captured for initialize only, used to rewrite cached response userAgent
 }
 
 type inFlightServerRequest struct {
@@ -391,8 +392,8 @@ func (p *Proxy) patchInitializeAlreadyError(proxyID int64, payload []byte, env p
 	if err := json.Unmarshal(env.ID, &rawID); err != nil {
 		return payload, env
 	}
-	var resultAny any
-	if err := json.Unmarshal(cached, &resultAny); err != nil {
+	resultAny, err := rewriteInitializeUserAgent(cached, pending.clientInfo)
+	if err != nil {
 		return payload, env
 	}
 	patched, err := json.Marshal(map[string]any{
@@ -408,6 +409,48 @@ func (p *Proxy) patchInitializeAlreadyError(proxyID int64, payload []byte, env p
 	}
 	p.debugLog("patching initialize Already-initialized error with cached success")
 	return patched, patchedEnv
+}
+
+// rewriteInitializeUserAgent rewrites the cached initialize result so userAgent
+// reflects the requesting TUI's clientInfo. The codex app-server builds
+// userAgent as `<name>/<serverVersion> (<os>; <arch>) unknown (<name>; <version>)`
+// where <name> and <version> come from the initialize request's clientInfo.
+// Gossip's daemon initializes with its own clientInfo so the cached userAgent
+// bakes that in; the TUI rejects the response if userAgent doesn't reflect its
+// own clientInfo. We surgically swap those fields while preserving the rest.
+func rewriteInitializeUserAgent(cached json.RawMessage, clientInfo *protocol.ClientInfo) (map[string]any, error) {
+	var resultMap map[string]any
+	if err := json.Unmarshal(cached, &resultMap); err != nil {
+		return nil, err
+	}
+	if clientInfo == nil || clientInfo.Name == "" {
+		return resultMap, nil
+	}
+	rawUA, ok := resultMap["userAgent"].(string)
+	if !ok || rawUA == "" {
+		return resultMap, nil
+	}
+	resultMap["userAgent"] = rewriteUserAgentString(rawUA, clientInfo)
+	return resultMap, nil
+}
+
+// rewriteUserAgentString takes a cached userAgent like
+// "gossip/0.121.0 (Mac OS 26.4.1; arm64) unknown (gossip; 0.2.0)" and rewrites
+// the name prefix and trailing parenthetical clientInfo so they reflect the
+// TUI's clientInfo. Unknown shapes are returned unchanged.
+func rewriteUserAgentString(ua string, clientInfo *protocol.ClientInfo) string {
+	slash := strings.Index(ua, "/")
+	if slash <= 0 {
+		return ua
+	}
+	openParen := strings.LastIndex(ua, "(")
+	closeParen := strings.LastIndex(ua, ")")
+	if openParen < 0 || closeParen < 0 || openParen >= closeParen {
+		return ua
+	}
+	rest := ua[slash:]
+	newUA := clientInfo.Name + rest[:openParen-slash+1] + clientInfo.Name + "; " + clientInfo.Version + ")"
+	return newUA
 }
 
 // patchThreadStartAlreadyError rewrites the upstream app-server's "thread already
@@ -508,13 +551,34 @@ func (p *Proxy) debugLog(msg string) {
 }
 
 func (p *Proxy) trackPendingClientRequest(proxyID int64, conn connID, method string, params json.RawMessage) {
-	p.mu.Lock()
-	p.pendingClient[proxyID] = pendingClientRequest{
+	entry := pendingClientRequest{
 		conn:     conn,
 		method:   method,
 		threadID: extractThreadIDFromParams(params),
 	}
+	if method == protocol.MethodInitialize {
+		entry.clientInfo = extractClientInfoFromParams(params)
+	}
+	p.mu.Lock()
+	p.pendingClient[proxyID] = entry
 	p.mu.Unlock()
+}
+
+func extractClientInfoFromParams(params json.RawMessage) *protocol.ClientInfo {
+	if len(params) == 0 {
+		return nil
+	}
+	var decoded struct {
+		ClientInfo protocol.ClientInfo `json:"clientInfo"`
+	}
+	if err := json.Unmarshal(params, &decoded); err != nil {
+		return nil
+	}
+	if decoded.ClientInfo.Name == "" && decoded.ClientInfo.Version == "" {
+		return nil
+	}
+	ci := decoded.ClientInfo
+	return &ci
 }
 
 func (p *Proxy) completePendingClientRequest(proxyID int64, env protocol.Envelope) {
