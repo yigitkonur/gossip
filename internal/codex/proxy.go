@@ -18,6 +18,12 @@ type pendingServerRequest struct {
 	method  string
 }
 
+type pendingClientRequest struct {
+	conn     connID
+	method   string
+	threadID string
+}
+
 // Proxy is the TUI-facing WebSocket server.
 type Proxy struct {
 	upstream *Client
@@ -29,6 +35,7 @@ type Proxy struct {
 	currentConnID   connID
 	nextConn        atomic.Int64
 	pendingRequests []pendingServerRequest
+	pendingClient   map[int64]pendingClientRequest
 
 	OnTUIConnected    func(id int64)
 	OnTUIDisconnected func(id int64)
@@ -37,10 +44,11 @@ type Proxy struct {
 // NewProxy returns a proxy server ready to be served via net/http.
 func NewProxy(upstream *Client) *Proxy {
 	return &Proxy{
-		upstream:    upstream,
-		ids:         newProxyIDTable(),
-		conns:       make(map[connID]*tuiConn),
-		secondaries: make(map[connID]*secondaryConn),
+		upstream:      upstream,
+		ids:           newProxyIDTable(),
+		conns:         make(map[connID]*tuiConn),
+		secondaries:   make(map[connID]*secondaryConn),
+		pendingClient: make(map[int64]pendingClientRequest),
 	}
 }
 
@@ -90,6 +98,7 @@ func (p *Proxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			p.currentConnID = 0
 		}
 		p.mu.Unlock()
+		p.dropPendingClientRequestsForConn(id)
 		p.ids.ForgetConn(id)
 		_ = conn.Close(websocket.StatusNormalClosure, "")
 		if p.OnTUIDisconnected != nil {
@@ -174,6 +183,7 @@ func (p *Proxy) serveSecondaryConnection(ctx context.Context, secondary *seconda
 		delete(p.conns, secondary.tui.id)
 		delete(p.secondaries, secondary.tui.id)
 		p.mu.Unlock()
+		p.dropPendingClientRequestsForConn(secondary.tui.id)
 		p.ids.ForgetConn(secondary.tui.id)
 		secondary.close()
 	}()
@@ -275,6 +285,7 @@ func (p *Proxy) forwardToUpstream(ctx context.Context, c *tuiConn, payload []byt
 		p.writeUpstream(ctx, payload)
 	case protocol.KindServerRequest:
 		proxyID := p.ids.Allocate(c.id, env.ID)
+		p.trackPendingClientRequest(proxyID, c.id, env.Method, env.Params)
 		rewritten, err := rewriteID(payload, proxyID)
 		if err != nil {
 			return
@@ -304,6 +315,7 @@ func (p *Proxy) HandleUpstreamMessage(ctx context.Context, payload []byte) {
 		if !ok || id < 0 {
 			return
 		}
+		p.completePendingClientRequest(id, env)
 		conn, orig, found := p.ids.Resolve(id)
 		if !found || !p.isCurrentConn(conn) {
 			return
@@ -320,6 +332,90 @@ func (p *Proxy) HandleUpstreamMessage(ctx context.Context, payload []byte) {
 			p.bufferServerRequest(payload, env.ID, env.Method)
 		}
 	}
+}
+
+func (p *Proxy) trackPendingClientRequest(proxyID int64, conn connID, method string, params json.RawMessage) {
+	p.mu.Lock()
+	p.pendingClient[proxyID] = pendingClientRequest{
+		conn:     conn,
+		method:   method,
+		threadID: extractThreadIDFromParams(params),
+	}
+	p.mu.Unlock()
+}
+
+func (p *Proxy) completePendingClientRequest(proxyID int64, env protocol.Envelope) {
+	p.mu.Lock()
+	pending, ok := p.pendingClient[proxyID]
+	if ok {
+		delete(p.pendingClient, proxyID)
+	}
+	p.mu.Unlock()
+	if !ok || env.Error != nil || pending.method != protocol.MethodThreadResume {
+		return
+	}
+	resumedThreadID := extractThreadIDFromResult(env.Result)
+	if resumedThreadID == "" {
+		return
+	}
+	p.dropOrphanPendingRequests(pending.conn, resumedThreadID)
+}
+
+func (p *Proxy) dropOrphanPendingRequests(conn connID, resumedThreadID string) {
+	dropped := make([]int64, 0)
+
+	p.mu.Lock()
+	for proxyID, pending := range p.pendingClient {
+		if pending.conn != conn {
+			continue
+		}
+		if pending.threadID == "" || pending.threadID == resumedThreadID {
+			continue
+		}
+		delete(p.pendingClient, proxyID)
+		dropped = append(dropped, proxyID)
+	}
+	p.mu.Unlock()
+
+	for _, proxyID := range dropped {
+		p.ids.ForgetID(proxyID)
+	}
+}
+
+func (p *Proxy) dropPendingClientRequestsForConn(conn connID) {
+	p.mu.Lock()
+	for proxyID, pending := range p.pendingClient {
+		if pending.conn == conn {
+			delete(p.pendingClient, proxyID)
+		}
+	}
+	p.mu.Unlock()
+}
+
+func extractThreadIDFromParams(params json.RawMessage) string {
+	if len(params) == 0 {
+		return ""
+	}
+	var decoded struct {
+		ThreadID string `json:"threadId"`
+	}
+	if err := json.Unmarshal(params, &decoded); err != nil {
+		return ""
+	}
+	return decoded.ThreadID
+}
+
+func extractThreadIDFromResult(result json.RawMessage) string {
+	if len(result) == 0 {
+		return ""
+	}
+	var decoded struct {
+		Thread protocol.Thread `json:"thread"`
+	}
+	if err := json.Unmarshal(result, &decoded); err != nil {
+		return ""
+	}
+	return decoded.Thread.ID
 }
 
 func (p *Proxy) sendServerRequest(ctx context.Context, payload []byte, serverID json.RawMessage, method string) bool {

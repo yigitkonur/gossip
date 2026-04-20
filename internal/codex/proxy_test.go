@@ -73,6 +73,89 @@ func TestRewriteRestoreID_RoundTrip(t *testing.T) {
 	}
 }
 
+func TestProxy_ClientResponseRestoresOriginalRequestID(t *testing.T) {
+	p := NewProxy(nil)
+	srv := httptest.NewServer(p)
+	defer srv.Close()
+
+	wsURL := "ws" + strings.TrimPrefix(srv.URL, "http")
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	conn, _, err := websocket.Dial(ctx, wsURL, nil)
+	if err != nil {
+		t.Fatalf("dial: %v", err)
+	}
+	defer conn.Close(websocket.StatusNormalClosure, "")
+
+	waitForConnectionCount(t, p, 1)
+	current, ok := p.currentConn()
+	if !ok {
+		t.Fatal("expected primary TUI connection")
+	}
+
+	p.forwardToUpstream(ctx, current, []byte(`{"jsonrpc":"2.0","id":42,"method":"thread/list","params":{}}`))
+	p.HandleUpstreamMessage(ctx, []byte(`{"jsonrpc":"2.0","id":100000,"result":{"threads":[]}}`))
+
+	_, payload, err := conn.Read(ctx)
+	if err != nil {
+		t.Fatalf("read response: %v", err)
+	}
+	var env protocol.Envelope
+	if err := json.Unmarshal(payload, &env); err != nil {
+		t.Fatalf("unmarshal restored response: %v", err)
+	}
+	if string(env.ID) != "42" {
+		t.Fatalf("restored response id = %s, want 42", env.ID)
+	}
+}
+
+func TestProxy_ThreadResumeDropsOrphanPendingClientRequests(t *testing.T) {
+	p := NewProxy(nil)
+	srv := httptest.NewServer(p)
+	defer srv.Close()
+
+	wsURL := "ws" + strings.TrimPrefix(srv.URL, "http")
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	conn, _, err := websocket.Dial(ctx, wsURL, nil)
+	if err != nil {
+		t.Fatalf("dial: %v", err)
+	}
+	defer conn.Close(websocket.StatusNormalClosure, "")
+
+	waitForConnectionCount(t, p, 1)
+	current, ok := p.currentConn()
+	if !ok {
+		t.Fatal("expected primary TUI connection")
+	}
+
+	p.forwardToUpstream(ctx, current, []byte(`{"jsonrpc":"2.0","id":10,"method":"turn/start","params":{"threadId":"thread-old"}}`))
+	p.forwardToUpstream(ctx, current, []byte(`{"jsonrpc":"2.0","id":11,"method":"thread/resume","params":{"threadId":"thread-new"}}`))
+
+	p.HandleUpstreamMessage(ctx, []byte(`{"jsonrpc":"2.0","id":100001,"result":{"thread":{"id":"thread-new"}}}`))
+
+	_, payload, err := conn.Read(ctx)
+	if err != nil {
+		t.Fatalf("read thread/resume response: %v", err)
+	}
+	var env protocol.Envelope
+	if err := json.Unmarshal(payload, &env); err != nil {
+		t.Fatalf("unmarshal thread/resume response: %v", err)
+	}
+	if string(env.ID) != "11" {
+		t.Fatalf("thread/resume response id = %s, want 11", env.ID)
+	}
+
+	p.HandleUpstreamMessage(ctx, []byte(`{"jsonrpc":"2.0","id":100000,"result":{"turn":{"id":"turn_1"}}}`))
+
+	readCtx, cancelRead := context.WithTimeout(context.Background(), 200*time.Millisecond)
+	defer cancelRead()
+	_, _, err = conn.Read(readCtx)
+	if err == nil {
+		t.Fatal("orphan turn/start response unexpectedly reached the client after thread/resume")
+	}
+}
+
 func TestProxy_ServerRequestBufferedUntilCurrentTUIConnects(t *testing.T) {
 	p := NewProxy(nil)
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)

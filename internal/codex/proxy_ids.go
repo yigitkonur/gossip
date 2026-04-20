@@ -23,7 +23,7 @@ type proxyIDTable struct {
 
 func newProxyIDTable() *proxyIDTable {
 	t := &proxyIDTable{m: make(map[int64]proxyIDEntry)}
-	t.next.Store(100000)
+	t.next.Store(99999)
 	return t
 }
 
@@ -55,5 +55,12 @@ func (t *proxyIDTable) ForgetConn(conn connID) {
 			delete(t.m, id)
 		}
 	}
+	t.mu.Unlock()
+}
+
+// ForgetID drops a single proxy id mapping without resolving it.
+func (t *proxyIDTable) ForgetID(id int64) {
+	t.mu.Lock()
+	delete(t.m, id)
 	t.mu.Unlock()
 }
