@@ -135,7 +135,9 @@ func (d *Daemon) Run(ctx context.Context) error {
 		return fmt.Errorf("codex start: %w", err)
 	}
 	d.writeStatusFile()
+	d.writePortsFile()
 	defer d.removeStatusFile()
+	defer d.removePortsFile()
 
 	d.proxy.OnTUIConnected = func(id int64) {
 		d.tuiState.HandleTUIConnected(id)
@@ -375,9 +377,23 @@ func (d *Daemon) writeStatusFile() {
 	_ = os.WriteFile(d.opts.StateDir.StatusFile(), []byte(payload), 0o644)
 }
 
+func (d *Daemon) writePortsFile() {
+	if d.opts.StateDir == nil {
+		return
+	}
+	payload := fmt.Sprintf("{\n  \"controlPort\": %d,\n  \"appPort\": %d,\n  \"proxyPort\": %d\n}\n", d.opts.ControlPort, d.opts.AppPort, d.opts.ProxyPort)
+	_ = os.WriteFile(d.opts.StateDir.PortsFile(), []byte(payload), 0o644)
+}
+
 func (d *Daemon) removeStatusFile() {
 	if d.opts.StateDir != nil {
 		_ = os.Remove(d.opts.StateDir.StatusFile())
+	}
+}
+
+func (d *Daemon) removePortsFile() {
+	if d.opts.StateDir != nil {
+		_ = os.Remove(d.opts.StateDir.PortsFile())
 	}
 }
 

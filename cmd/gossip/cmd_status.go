@@ -7,9 +7,9 @@ import (
 	"net/http"
 	"time"
 
+	"github.com/spf13/cobra"
 	"github.com/yigitkonur/gossip/internal/daemon"
 	"github.com/yigitkonur/gossip/internal/statedir"
-	"github.com/spf13/cobra"
 )
 
 func newStatusCmd() *cobra.Command {
@@ -18,7 +18,7 @@ func newStatusCmd() *cobra.Command {
 		Short: "Print current daemon status",
 		RunE: func(cmd *cobra.Command, args []string) error {
 			sd := statedir.New("")
-			lc := daemon.NewLifecycle(daemon.LifecycleOptions{StateDir: sd, ControlPort: controlPort()})
+			lc := daemon.NewLifecycle(daemon.LifecycleOptions{StateDir: sd, ControlPort: resolvedControlPort(sd)})
 			ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 			defer cancel()
 			req, _ := http.NewRequestWithContext(ctx, http.MethodGet, lc.HealthURL(), nil)

@@ -9,9 +9,9 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/spf13/cobra"
 	"github.com/yigitkonur/gossip/internal/daemon"
 	"github.com/yigitkonur/gossip/internal/statedir"
-	"github.com/spf13/cobra"
 )
 
 func newKillCmd() *cobra.Command {
@@ -21,7 +21,7 @@ func newKillCmd() *cobra.Command {
 		RunE: func(cmd *cobra.Command, args []string) error {
 			sd := statedir.New("")
 			_ = sd.Ensure()
-			lc := daemon.NewLifecycle(daemon.LifecycleOptions{StateDir: sd, ControlPort: controlPort()})
+			lc := daemon.NewLifecycle(daemon.LifecycleOptions{StateDir: sd, ControlPort: resolvedControlPort(sd)})
 			if err := lc.WriteKilled(); err != nil {
 				return err
 			}

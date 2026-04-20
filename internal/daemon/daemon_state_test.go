@@ -3,6 +3,7 @@ package daemon
 import (
 	"context"
 	"fmt"
+	"os"
 	"sync"
 	"testing"
 	"time"
@@ -11,6 +12,7 @@ import (
 	"github.com/yigitkonur/gossip/internal/control"
 	"github.com/yigitkonur/gossip/internal/filter"
 	"github.com/yigitkonur/gossip/internal/protocol"
+	"github.com/yigitkonur/gossip/internal/statedir"
 )
 
 func TestDaemon_StateHandlers_NoDataRace(t *testing.T) {
@@ -63,5 +65,37 @@ func TestDaemon_AttentionWindowPausesStatusFlushesUntilExpiry(t *testing.T) {
 		}
 	case <-time.After(time.Second):
 		t.Fatal("timed out waiting for STATUS flush after attention window expiry")
+	}
+}
+
+func TestDaemon_WritesAndRemovesPortsFile(t *testing.T) {
+	sd := statedir.New(t.TempDir())
+	d := New(Options{StateDir: sd, AppPort: 4600, ProxyPort: 4601, ControlPort: 4602})
+
+	d.writeStatusFile()
+	d.writePortsFile()
+
+	if _, err := os.Stat(sd.StatusFile()); err != nil {
+		t.Fatalf("status file missing: %v", err)
+	}
+	if _, err := os.Stat(sd.PortsFile()); err != nil {
+		t.Fatalf("ports file missing: %v", err)
+	}
+
+	portsPayload, err := os.ReadFile(sd.PortsFile())
+	if err != nil {
+		t.Fatalf("read ports file: %v", err)
+	}
+	if string(portsPayload) != "{\n  \"controlPort\": 4602,\n  \"appPort\": 4600,\n  \"proxyPort\": 4601\n}\n" {
+		t.Fatalf("unexpected ports payload: %q", string(portsPayload))
+	}
+
+	d.removeStatusFile()
+	d.removePortsFile()
+	if _, err := os.Stat(sd.StatusFile()); !os.IsNotExist(err) {
+		t.Fatalf("status file still exists: %v", err)
+	}
+	if _, err := os.Stat(sd.PortsFile()); !os.IsNotExist(err) {
+		t.Fatalf("ports file still exists: %v", err)
 	}
 }
