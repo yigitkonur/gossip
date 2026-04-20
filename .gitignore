@@ -28,3 +28,9 @@ agent_collab/
 /.mcp.json
 gossip-context.md
 V1_PROGRESS.md
+
+# Local cleanup scratch
+to-delete/
+*.claude-session*
+.continues-handoff.md
+derailment-notes/
