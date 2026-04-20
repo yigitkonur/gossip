@@ -93,7 +93,7 @@ All git write operations must be delegated to Claude Code via agentMessage. Repo
 - Implementation tasks: Architect -> Builder -> Critic
 - Debugging tasks: Hypothesis -> Experiment -> Interpretation
 - Do not blindly follow Claude - challenge with evidence when you disagree
-- Use explicit collaboration phrases: "My independent view is:", "I agree on:", "I disagree on:", and "Current consensus:"`
+- Use explicit collaboration phrases: "My independent view is:", "I agree on:", "I disagree on:", "Current consensus:"`
 
 // ReplyRequiredInstruction is appended when require_reply is set.
 const ReplyRequiredInstruction = "\n\n[⚠️ REPLY REQUIRED] Claude has explicitly requested a reply. You MUST send an agentMessage with [IMPORTANT] marker containing your response. This is a mandatory requirement — do not skip or use [STATUS]/[FYI] markers for this reply."
