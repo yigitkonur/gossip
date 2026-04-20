@@ -26,6 +26,7 @@ const (
 	codexStopTimeout     = 3 * time.Second
 	turnStartedMessage   = "⏳ Codex is working on the current task. Wait for completion before sending a reply."
 	replyMissingMessage  = "⚠️ Codex completed the turn without sending a reply (require_reply was set). Codex may not have generated an agentMessage. You may want to retry or rephrase."
+	claudeOnlineMessage  = "✅ Gossip connected to Claude Code."
 )
 
 type messageTemplates struct {
@@ -514,14 +515,14 @@ func (d *Daemon) OnClaudeConnect() {
 		}
 	}
 	if needNotify {
-		_, _ = codexClient.InjectMessage(context.Background(), "✅ Claude Code is online, bridge restored. Bidirectional communication can continue.")
+		_, _ = codexClient.InjectMessage(context.Background(), claudeOnlineMessage)
 		d.stateMu.Lock()
 		d.claudeOnlineNoticeSent = true
 		d.claudeOfflineNoticeShown = false
 		d.stateMu.Unlock()
 	}
 	if d.opts.Logger != nil {
-		d.opts.Logger("claude frontend attached")
+		d.opts.Logger("Claude attached")
 	}
 }
 

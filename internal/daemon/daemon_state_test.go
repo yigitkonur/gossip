@@ -114,6 +114,12 @@ func TestFormatCodexExitMessageMatchesTS(t *testing.T) {
 	}
 }
 
+func TestClaudeOnlineMessageMatchesTS(t *testing.T) {
+	if claudeOnlineMessage != "✅ Gossip connected to Claude Code." {
+		t.Fatalf("claudeOnlineMessage = %q", claudeOnlineMessage)
+	}
+}
+
 func TestDaemon_ShouldEmitAttachStatus_UsesCooldownAndBufferedGate(t *testing.T) {
 	d := New(Options{})
 	now := time.Unix(100, 0)
