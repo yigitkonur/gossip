@@ -90,6 +90,30 @@ func TestProcess_CleanupPortKillsStaleCodexProcess(t *testing.T) {
 	}
 }
 
+func TestProcess_CleanupPortSkipsWhenLsofUnavailable(t *testing.T) {
+	var logs []string
+	restore := overrideProcessRun(t, func(_ context.Context, name string, args ...string) (string, error) {
+		if name == "lsof" {
+			return "", &exec.Error{Name: "lsof", Err: exec.ErrNotFound}
+		}
+		return "", nil
+	})
+	defer restore()
+
+	p := NewProcess(ProcessOptions{
+		Port: 4500,
+		Logger: func(stream, line string) {
+			logs = append(logs, stream+":"+line)
+		},
+	})
+	if err := p.cleanupPort(context.Background()); err != nil {
+		t.Fatalf("cleanupPort() error = %v, want nil when lsof is unavailable", err)
+	}
+	if len(logs) != 1 || !strings.Contains(logs[0], "skipping port cleanup check for 4500") {
+		t.Fatalf("logs = %#v, want missing-lsof warning", logs)
+	}
+}
+
 func overrideProcessRun(t *testing.T, runFn func(context.Context, string, ...string) (string, error)) func() {
 	t.Helper()
 	prevRun := processRun

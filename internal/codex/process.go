@@ -186,11 +186,17 @@ func (p *Process) cleanupPort(ctx context.Context) error {
 func (p *Process) portPIDs(ctx context.Context) ([]int, error) {
 	out, err := processRun(ctx, "lsof", "-ti", ":"+strconv.Itoa(p.opts.Port))
 	if err != nil {
+		if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+			return nil, err
+		}
 		var exitErr *exec.ExitError
 		if errors.As(err, &exitErr) && len(strings.TrimSpace(string(exitErr.Stderr))) == 0 && strings.TrimSpace(out) == "" {
 			return nil, nil
 		}
-		return nil, err
+		if p.opts.Logger != nil {
+			p.opts.Logger("stderr", fmt.Sprintf("skipping port cleanup check for %d: %v", p.opts.Port, err))
+		}
+		return nil, nil
 	}
 	if strings.TrimSpace(out) == "" {
 		return nil, nil
