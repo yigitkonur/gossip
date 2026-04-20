@@ -40,9 +40,10 @@ type ProcessOptions struct {
 type Process struct {
 	opts ProcessOptions
 
-	mu   sync.Mutex
-	cmd  *exec.Cmd
-	done chan struct{}
+	mu       sync.Mutex
+	cmd      *exec.Cmd
+	done     chan struct{}
+	exitCode *int
 }
 
 // NewProcess constructs a Process with the given options.
@@ -99,15 +100,23 @@ func (p *Process) Start(ctx context.Context) error {
 
 	p.cmd = cmd
 	p.done = make(chan struct{})
+	p.exitCode = nil
 
 	var wg sync.WaitGroup
 	wg.Add(2)
 	go func() { defer wg.Done(); p.pumpLines("stdout", stdout) }()
 	go func() { defer wg.Done(); p.pumpLines("stderr", stderr) }()
 	go func() {
-		wg.Wait()      // drain all pipe output first
-		_ = cmd.Wait() // then reap the process
-		close(p.done)  // then signal exit
+		wg.Wait()
+		waitErr := cmd.Wait()
+		exitCode := exitCodeFromWaitErr(waitErr)
+		p.mu.Lock()
+		if p.cmd == cmd {
+			p.cmd = nil
+		}
+		p.exitCode = exitCode
+		p.mu.Unlock()
+		close(p.done)
 	}()
 
 	return p.waitForHealthy(ctx)
@@ -143,6 +152,16 @@ func (p *Process) Done() <-chan struct{} {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	return p.done
+}
+
+// ExitCode returns the most recent subprocess exit code when one is available.
+func (p *Process) ExitCode() (int, bool) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if p.exitCode == nil {
+		return 0, false
+	}
+	return *p.exitCode, true
 }
 
 func (p *Process) cleanupPort(ctx context.Context) error {
@@ -272,4 +291,17 @@ func (p *Process) pumpLines(stream string, r io.Reader) {
 			p.opts.Logger(stream, scanner.Text())
 		}
 	}
+}
+
+func exitCodeFromWaitErr(err error) *int {
+	if err == nil {
+		code := 0
+		return &code
+	}
+	var exitErr *exec.ExitError
+	if errors.As(err, &exitErr) {
+		code := exitErr.ExitCode()
+		return &code
+	}
+	return nil
 }

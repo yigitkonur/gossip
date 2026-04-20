@@ -341,8 +341,19 @@ func (d *Daemon) handleCodexEvent(ctx context.Context, ev codex.Event) {
 		}
 	case codex.EventProcessExit:
 		d.tuiState.HandleCodexExit()
-		d.broadcastSystem(ctx, "system_codex_exit", "⚠️ Codex app-server exited. Gossip daemon is still running, but Codex needs to be restarted.")
+		d.broadcastSystem(ctx, "system_codex_exit", formatCodexExitMessage(ev.ExitCode))
+		d.stateMu.Lock()
+		d.claudeOnlineNoticeSent = false
+		d.claudeOfflineNoticeShown = false
+		d.stateMu.Unlock()
 	}
+}
+
+func formatCodexExitMessage(code *int) string {
+	if code == nil {
+		return "⚠️ Codex app-server exited (code unknown). Gossip daemon is still running, but the Codex side needs to be restarted."
+	}
+	return fmt.Sprintf("⚠️ Codex app-server exited (code %d). Gossip daemon is still running, but the Codex side needs to be restarted.", *code)
 }
 
 func (d *Daemon) scheduleIdleShutdown() {

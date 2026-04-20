@@ -108,7 +108,8 @@ func TestClient_WatchProcessExit_ClearsReadinessState(t *testing.T) {
 	c.agentMessageBufs["turn_1_item_1"] = &strings.Builder{}
 	c.agentMessageBufs["turn_1_item_1"].WriteString("partial")
 	c.agentMessageMu.Unlock()
-	c.proc = &Process{done: make(chan struct{})}
+	exitCode := 7
+	c.proc = &Process{done: make(chan struct{}), exitCode: &exitCode}
 
 	done := make(chan struct{})
 	go func() {
@@ -128,6 +129,17 @@ func TestClient_WatchProcessExit_ClearsReadinessState(t *testing.T) {
 	}
 	if c.TurnInProgress() {
 		t.Fatal("TurnInProgress() should be false after process exit")
+	}
+	select {
+	case ev := <-c.Events():
+		if ev.Kind != EventProcessExit {
+			t.Fatalf("event kind = %v, want %v", ev.Kind, EventProcessExit)
+		}
+		if ev.ExitCode == nil || *ev.ExitCode != 7 {
+			t.Fatalf("event exit code = %v, want 7", ev.ExitCode)
+		}
+	default:
+		t.Fatal("no EventProcessExit emitted")
 	}
 	c.agentMessageMu.Lock()
 	defer c.agentMessageMu.Unlock()

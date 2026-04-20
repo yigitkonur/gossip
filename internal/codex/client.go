@@ -134,6 +134,10 @@ func (c *Client) watchProcessExit() {
 	}
 	<-done
 	threadID := c.ActiveThreadID()
+	var exitCode *int
+	if code, ok := c.proc.ExitCode(); ok {
+		exitCode = &code
+	}
 	if c.dialer != nil {
 		_ = c.dialer.Close()
 	}
@@ -145,7 +149,7 @@ func (c *Client) watchProcessExit() {
 	c.agentMessageBufs = make(map[string]*strings.Builder)
 	c.agentMessageMu.Unlock()
 	c.turnInProgress.Store(false)
-	c.emit(Event{Kind: EventProcessExit, ThreadID: threadID})
+	c.emit(Event{Kind: EventProcessExit, ThreadID: threadID, ExitCode: exitCode})
 }
 
 func (c *Client) Stop(ctx context.Context) error {

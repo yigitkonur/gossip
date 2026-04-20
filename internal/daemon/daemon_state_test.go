@@ -104,6 +104,16 @@ func TestReplyMissingMessageMatchesTS(t *testing.T) {
 	}
 }
 
+func TestFormatCodexExitMessageMatchesTS(t *testing.T) {
+	code := 7
+	if got := formatCodexExitMessage(&code); got != "⚠️ Codex app-server exited (code 7). Gossip daemon is still running, but the Codex side needs to be restarted." {
+		t.Fatalf("formatCodexExitMessage(7) = %q", got)
+	}
+	if got := formatCodexExitMessage(nil); got != "⚠️ Codex app-server exited (code unknown). Gossip daemon is still running, but the Codex side needs to be restarted." {
+		t.Fatalf("formatCodexExitMessage(nil) = %q", got)
+	}
+}
+
 func TestDaemon_ShouldEmitAttachStatus_UsesCooldownAndBufferedGate(t *testing.T) {
 	d := New(Options{})
 	now := time.Unix(100, 0)
