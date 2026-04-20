@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"net/http"
+	"sort"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -14,15 +15,26 @@ import (
 )
 
 type pendingServerRequest struct {
-	payload []byte
-	server  json.RawMessage
-	method  string
+	payload  []byte
+	server   json.RawMessage
+	method   string
+	threadID string
+	order    uint64
 }
 
 type pendingClientRequest struct {
 	conn     connID
 	method   string
 	threadID string
+}
+
+type inFlightServerRequest struct {
+	payload  []byte
+	server   json.RawMessage
+	conn     connID
+	method   string
+	threadID string
+	order    uint64
 }
 
 // Proxy is the TUI-facing WebSocket server.
@@ -35,8 +47,10 @@ type Proxy struct {
 	secondaries     map[connID]*secondaryConn
 	currentConnID   connID
 	nextConn        atomic.Int64
+	nextServerOrder atomic.Uint64
 	pendingRequests []pendingServerRequest
 	pendingClient   map[int64]pendingClientRequest
+	serverRequests  map[int64]inFlightServerRequest
 
 	OnTUIConnected    func(id int64)
 	OnTUIDisconnected func(id int64)
@@ -45,11 +59,12 @@ type Proxy struct {
 // NewProxy returns a proxy server ready to be served via net/http.
 func NewProxy(upstream *Client) *Proxy {
 	return &Proxy{
-		upstream:      upstream,
-		ids:           newProxyIDTable(),
-		conns:         make(map[connID]*tuiConn),
-		secondaries:   make(map[connID]*secondaryConn),
-		pendingClient: make(map[int64]pendingClientRequest),
+		upstream:       upstream,
+		ids:            newProxyIDTable(),
+		conns:          make(map[connID]*tuiConn),
+		secondaries:    make(map[connID]*secondaryConn),
+		pendingClient:  make(map[int64]pendingClientRequest),
+		serverRequests: make(map[int64]inFlightServerRequest),
 	}
 }
 
@@ -68,11 +83,8 @@ func (p *Proxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 	p.mu.Lock()
 	p.conns[id] = c
-	pending := []pendingServerRequest(nil)
 	if p.currentConnID == 0 {
 		p.currentConnID = id
-		pending = append([]pendingServerRequest(nil), p.pendingRequests...)
-		p.pendingRequests = nil
 		isPrimary = true
 	} else {
 		secondary = &secondaryConn{tui: c}
@@ -90,7 +102,6 @@ func (p *Proxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	if p.OnTUIConnected != nil {
 		p.OnTUIConnected(int64(id))
 	}
-	p.replayPending(r.Context(), c, pending)
 
 	defer func() {
 		p.mu.Lock()
@@ -99,7 +110,7 @@ func (p *Proxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			p.currentConnID = 0
 		}
 		p.mu.Unlock()
-		p.dropPendingClientRequestsForConn(id)
+		p.retireConnectionState(id)
 		p.ids.ForgetConn(id)
 		_ = conn.Close(websocket.StatusNormalClosure, "")
 		if p.OnTUIDisconnected != nil {
@@ -273,6 +284,14 @@ func (p *Proxy) forwardToUpstream(ctx context.Context, c *tuiConn, payload []byt
 		if !ok {
 			return
 		}
+		if pending, ok := p.takeServerRequest(id, c.id); ok {
+			rewritten, err := restoreID(payload, pending.server)
+			if err != nil {
+				return
+			}
+			p.writeUpstream(ctx, rewritten)
+			return
+		}
 		conn, orig, found := p.ids.Resolve(id)
 		if !found || conn != c.id {
 			return
@@ -330,8 +349,8 @@ func (p *Proxy) HandleUpstreamMessage(ctx context.Context, payload []byte) {
 	case protocol.KindNotification:
 		p.writeCurrent(ctx, payload)
 	case protocol.KindServerRequest:
-		if !p.sendServerRequest(ctx, payload, env.ID, env.Method) {
-			p.bufferServerRequest(payload, env.ID, env.Method)
+		if !p.sendServerRequest(ctx, payload, env.ID, env.Method, env.Params) {
+			p.bufferServerRequest(payload, env.ID, env.Method, env.Params)
 		}
 	}
 }
@@ -404,17 +423,24 @@ func (p *Proxy) completePendingClientRequest(proxyID int64, env protocol.Envelop
 		delete(p.pendingClient, proxyID)
 	}
 	p.mu.Unlock()
-	if !ok || env.Error != nil || pending.method != protocol.MethodThreadResume {
+	if !ok || env.Error != nil {
 		return
 	}
-	resumedThreadID := extractThreadIDFromResult(env.Result)
-	if resumedThreadID == "" {
-		return
+	switch pending.method {
+	case protocol.MethodThreadStart:
+		p.clearPendingServerRequests()
+	case protocol.MethodThreadResume:
+		resumedThreadID := extractThreadIDFromResult(env.Result)
+		if resumedThreadID == "" {
+			return
+		}
+		p.replayPendingForThread(context.Background(), pending.conn, resumedThreadID)
+		p.dropOrphanPendingServerRequests(resumedThreadID)
+		p.dropOrphanPendingClientRequests(pending.conn, resumedThreadID)
 	}
-	p.dropOrphanPendingRequests(pending.conn, resumedThreadID)
 }
 
-func (p *Proxy) dropOrphanPendingRequests(conn connID, resumedThreadID string) {
+func (p *Proxy) dropOrphanPendingClientRequests(conn connID, resumedThreadID string) {
 	dropped := make([]int64, 0)
 
 	p.mu.Lock()
@@ -433,6 +459,25 @@ func (p *Proxy) dropOrphanPendingRequests(conn connID, resumedThreadID string) {
 	for _, proxyID := range dropped {
 		p.ids.ForgetID(proxyID)
 	}
+}
+
+func (p *Proxy) dropOrphanPendingServerRequests(resumedThreadID string) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	remaining := make([]pendingServerRequest, 0, len(p.pendingRequests))
+	for _, pending := range p.pendingRequests {
+		if pending.threadID != "" && pending.threadID != resumedThreadID {
+			continue
+		}
+		remaining = append(remaining, pending)
+	}
+	p.pendingRequests = remaining
+}
+
+func (p *Proxy) clearPendingServerRequests() {
+	p.mu.Lock()
+	p.pendingRequests = nil
+	p.mu.Unlock()
 }
 
 func (p *Proxy) dropPendingClientRequestsForConn(conn connID) {
@@ -471,7 +516,7 @@ func extractThreadIDFromResult(result json.RawMessage) string {
 	return decoded.Thread.ID
 }
 
-func (p *Proxy) sendServerRequest(ctx context.Context, payload []byte, serverID json.RawMessage, method string) bool {
+func (p *Proxy) sendServerRequest(ctx context.Context, payload []byte, serverID json.RawMessage, method string, params json.RawMessage) bool {
 	current, ok := p.currentConn()
 	if !ok {
 		return false
@@ -481,29 +526,142 @@ func (p *Proxy) sendServerRequest(ctx context.Context, payload []byte, serverID 
 	if err != nil {
 		return false
 	}
-	return current.write(ctx, rewritten) == nil
+	if err := current.write(ctx, rewritten); err != nil {
+		p.ids.ForgetID(proxyID)
+		return false
+	}
+	p.mu.Lock()
+	p.serverRequests[proxyID] = inFlightServerRequest{
+		payload:  append([]byte(nil), payload...),
+		server:   append(json.RawMessage(nil), serverID...),
+		conn:     current.id,
+		method:   method,
+		threadID: extractThreadIDFromParams(params),
+		order:    p.nextServerOrder.Add(1),
+	}
+	p.mu.Unlock()
+	return true
 }
 
-func (p *Proxy) bufferServerRequest(payload []byte, serverID json.RawMessage, method string) {
+func (p *Proxy) bufferServerRequest(payload []byte, serverID json.RawMessage, method string, params json.RawMessage) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
-	p.pendingRequests = append(p.pendingRequests, pendingServerRequest{payload: append([]byte(nil), payload...), server: append(json.RawMessage(nil), serverID...), method: method})
+	p.pendingRequests = append(p.pendingRequests, pendingServerRequest{
+		payload:  append([]byte(nil), payload...),
+		server:   append(json.RawMessage(nil), serverID...),
+		method:   method,
+		threadID: extractThreadIDFromParams(params),
+		order:    p.nextServerOrder.Add(1),
+	})
 }
 
-func (p *Proxy) replayPending(ctx context.Context, c *tuiConn, pending []pendingServerRequest) {
+func (p *Proxy) replayPendingForThread(ctx context.Context, conn connID, resumedThreadID string) {
+	current, ok := p.currentConn()
+	if !ok || current.id != conn {
+		return
+	}
+
+	p.mu.Lock()
+	pending := append([]pendingServerRequest(nil), p.pendingRequests...)
+	p.pendingRequests = nil
+	p.mu.Unlock()
+
 	remaining := make([]pendingServerRequest, 0)
 	for _, req := range pending {
-		proxyID := p.ids.Allocate(c.id, req.server)
-		rewritten, err := rewriteID(req.payload, proxyID)
-		if err != nil || c.write(ctx, rewritten) != nil {
+		if req.threadID != "" && req.threadID != resumedThreadID {
+			remaining = append(remaining, req)
+			continue
+		}
+		if !p.replayServerRequest(ctx, current, req) {
 			remaining = append(remaining, req)
 		}
 	}
 	if len(remaining) > 0 {
 		p.mu.Lock()
 		p.pendingRequests = append(remaining, p.pendingRequests...)
+		sortPendingServerRequests(p.pendingRequests)
 		p.mu.Unlock()
 	}
+}
+
+func (p *Proxy) replayServerRequest(ctx context.Context, current *tuiConn, req pendingServerRequest) bool {
+	proxyID := p.ids.Allocate(current.id, req.server)
+	rewritten, err := rewriteID(req.payload, proxyID)
+	if err != nil {
+		p.ids.ForgetID(proxyID)
+		return false
+	}
+	if err := current.write(ctx, rewritten); err != nil {
+		p.ids.ForgetID(proxyID)
+		return false
+	}
+	p.mu.Lock()
+	p.serverRequests[proxyID] = inFlightServerRequest{
+		payload:  append([]byte(nil), req.payload...),
+		server:   append(json.RawMessage(nil), req.server...),
+		conn:     current.id,
+		method:   req.method,
+		threadID: req.threadID,
+		order:    req.order,
+	}
+	p.mu.Unlock()
+	return true
+}
+
+func (p *Proxy) takeServerRequest(proxyID int64, conn connID) (inFlightServerRequest, bool) {
+	p.mu.Lock()
+	pending, ok := p.serverRequests[proxyID]
+	if ok && pending.conn == conn {
+		delete(p.serverRequests, proxyID)
+	} else {
+		ok = false
+	}
+	p.mu.Unlock()
+	if ok {
+		p.ids.ForgetID(proxyID)
+	}
+	return pending, ok
+}
+
+func (p *Proxy) retireConnectionState(conn connID) {
+	p.dropPendingClientRequestsForConn(conn)
+
+	requeued := make([]pendingServerRequest, 0)
+	forgotten := make([]int64, 0)
+
+	p.mu.Lock()
+	for proxyID, pending := range p.serverRequests {
+		if pending.conn != conn {
+			continue
+		}
+		delete(p.serverRequests, proxyID)
+		forgotten = append(forgotten, proxyID)
+		requeued = append(requeued, pendingServerRequest{
+			payload:  append([]byte(nil), pending.payload...),
+			server:   append(json.RawMessage(nil), pending.server...),
+			method:   pending.method,
+			threadID: pending.threadID,
+			order:    pending.order,
+		})
+	}
+	if len(requeued) > 0 {
+		sort.Slice(requeued, func(i, j int) bool {
+			return requeued[i].order < requeued[j].order
+		})
+		p.pendingRequests = append(p.pendingRequests, requeued...)
+		sortPendingServerRequests(p.pendingRequests)
+	}
+	p.mu.Unlock()
+
+	for _, proxyID := range forgotten {
+		p.ids.ForgetID(proxyID)
+	}
+}
+
+func sortPendingServerRequests(pending []pendingServerRequest) {
+	sort.Slice(pending, func(i, j int) bool {
+		return pending[i].order < pending[j].order
+	})
 }
 
 func (p *Proxy) currentConn() (*tuiConn, bool) {
