@@ -8,13 +8,13 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/spf13/cobra"
 	"github.com/yigitkonur/gossip/internal/config"
 	"github.com/yigitkonur/gossip/internal/control"
 	"github.com/yigitkonur/gossip/internal/daemon"
 	"github.com/yigitkonur/gossip/internal/mcp"
 	"github.com/yigitkonur/gossip/internal/protocol"
 	"github.com/yigitkonur/gossip/internal/statedir"
-	"github.com/spf13/cobra"
 )
 
 const claudeInstructions = `Codex is an AI coding agent (OpenAI) running in a separate session on the same machine.
@@ -78,7 +78,7 @@ func newClaudeCmd() *cobra.Command {
 				Name:         "gossip",
 				Version:      version,
 				Instructions: claudeInstructions,
-				DeliveryMode: resolveClaudeDeliveryMode(cfg),
+				DeliveryMode: resolveClaudeDeliveryMode(cfg, logToStderr),
 				ReplyHandler: func(ctx context.Context, msg protocol.BridgeMessage, requireReply bool) mcp.ReplyResult {
 					if bridgeDisabled.Load() {
 						return mcp.ReplyResult{Success: false, Error: "Gossip is disabled by gossip kill. Restart with gossip codex to reconnect."}
@@ -145,8 +145,11 @@ func newClaudeCmd() *cobra.Command {
 	}
 }
 
-func resolveClaudeDeliveryMode(cfg config.Config) mcp.DeliveryMode {
+func resolveClaudeDeliveryMode(cfg config.Config, logger func(string)) mcp.DeliveryMode {
 	if mode, ok := parseDeliveryMode(os.Getenv("GOSSIP_MODE")); ok {
+		return mode
+	}
+	if mode, ok := parseDeliveryMode(os.Getenv("AGENTBRIDGE_MODE")); ok {
 		return mode
 	}
 	if agent, ok := cfg.Agents["claude"]; ok {
@@ -154,7 +157,10 @@ func resolveClaudeDeliveryMode(cfg config.Config) mcp.DeliveryMode {
 			return mode
 		}
 	}
-	return mcp.DeliveryPush
+	if logger != nil {
+		logger("Delivery mode defaulting to pull")
+	}
+	return mcp.DeliveryPull
 }
 
 func parseDeliveryMode(raw string) (mcp.DeliveryMode, bool) {

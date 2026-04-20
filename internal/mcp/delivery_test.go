@@ -10,6 +10,13 @@ import (
 	"github.com/yigitkonur/gossip/internal/protocol"
 )
 
+func TestServer_DefaultDeliveryModeIsPull(t *testing.T) {
+	s := NewServer(ServerOptions{})
+	if s.opts.DeliveryMode != DeliveryPull {
+		t.Fatalf("DeliveryMode = %q, want %q", s.opts.DeliveryMode, DeliveryPull)
+	}
+}
+
 func TestServer_PullMode_QueuesMessages(t *testing.T) {
 	s := NewServer(ServerOptions{DeliveryMode: DeliveryPull, MaxBufferedMessages: 3})
 	for i := 0; i < 5; i++ {

@@ -69,7 +69,7 @@ func NewServer(opts ServerOptions) *Server {
 		opts.Version = "0.2.0"
 	}
 	if opts.DeliveryMode == "" {
-		opts.DeliveryMode = DeliveryPush
+		opts.DeliveryMode = DeliveryPull
 	}
 	if opts.MaxBufferedMessages == 0 {
 		opts.MaxBufferedMessages = 100
