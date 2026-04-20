@@ -25,3 +25,19 @@ func TestResolvedControlPort_FallsBackToEnvDefault(t *testing.T) {
 		t.Fatalf("resolvedControlPort() = %d, want 4802", got)
 	}
 }
+
+func TestControlPort_UsesAgentBridgeAliasWhenPrimaryUnset(t *testing.T) {
+	t.Setenv("GOSSIP_CONTROL_PORT", "")
+	t.Setenv("AGENTBRIDGE_CONTROL_PORT", "4902")
+	if got := controlPort(); got != 4902 {
+		t.Fatalf("controlPort() = %d, want 4902", got)
+	}
+}
+
+func TestControlPort_PrimaryEnvWinsOverAlias(t *testing.T) {
+	t.Setenv("GOSSIP_CONTROL_PORT", "4802")
+	t.Setenv("AGENTBRIDGE_CONTROL_PORT", "4902")
+	if got := controlPort(); got != 4802 {
+		t.Fatalf("controlPort() = %d, want 4802", got)
+	}
+}

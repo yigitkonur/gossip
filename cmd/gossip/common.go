@@ -9,12 +9,24 @@ import (
 )
 
 func controlPort() int {
-	if raw := os.Getenv("GOSSIP_CONTROL_PORT"); raw != "" {
-		if n, err := strconv.Atoi(raw); err == nil && n > 0 {
-			return n
-		}
+	if port, ok := firstPositiveIntEnv("GOSSIP_CONTROL_PORT", "AGENTBRIDGE_CONTROL_PORT"); ok {
+		return port
 	}
 	return 4502
+}
+
+func firstPositiveIntEnv(keys ...string) (int, bool) {
+	for _, key := range keys {
+		raw := os.Getenv(key)
+		if raw == "" {
+			continue
+		}
+		n, err := strconv.Atoi(raw)
+		if err == nil && n > 0 {
+			return n, true
+		}
+	}
+	return 0, false
 }
 
 type daemonStatusFile struct {
