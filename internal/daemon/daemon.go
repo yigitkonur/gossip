@@ -474,17 +474,20 @@ func (d *Daemon) Snapshot() control.Status {
 	if d.statusBuf != nil {
 		queued += d.statusBuf.Size()
 	}
+	dropped := 0
 	if d.control != nil {
 		queued += d.control.QueuedCount()
+		dropped = d.control.DroppedCount()
 	}
 	return control.Status{
-		BridgeReady:        d.tuiState.CanReply(),
-		TuiConnected:       tuiConnected,
-		ThreadID:           threadID,
-		QueuedMessageCount: queued,
-		ProxyURL:           fmt.Sprintf("ws://127.0.0.1:%d", d.opts.ProxyPort),
-		AppServerURL:       fmt.Sprintf("ws://127.0.0.1:%d", d.opts.AppPort),
-		Pid:                os.Getpid(),
+		BridgeReady:         d.tuiState.CanReply(),
+		TuiConnected:        tuiConnected,
+		ThreadID:            threadID,
+		QueuedMessageCount:  queued,
+		DroppedMessageCount: dropped,
+		ProxyURL:            fmt.Sprintf("ws://127.0.0.1:%d", d.opts.ProxyPort),
+		AppServerURL:        fmt.Sprintf("ws://127.0.0.1:%d", d.opts.AppPort),
+		Pid:                 os.Getpid(),
 	}
 }
 

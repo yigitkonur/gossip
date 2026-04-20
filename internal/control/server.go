@@ -22,11 +22,12 @@ type Handler interface {
 type Server struct {
 	handler Handler
 
-	mu       sync.Mutex
-	conns    map[int64]*controlConn
-	nextID   int64
-	attached *controlConn
-	buffered []protocol.BridgeMessage
+	mu              sync.Mutex
+	conns           map[int64]*controlConn
+	nextID          int64
+	attached        *controlConn
+	buffered        []protocol.BridgeMessage
+	droppedMessages int
 }
 
 // NewServer constructs a control server bound to the given handler.
@@ -64,12 +65,24 @@ func (s *Server) QueuedCount() int {
 	return len(s.buffered)
 }
 
+// DroppedCount returns how many buffered messages were trimmed due to overflow.
+func (s *Server) DroppedCount() int {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.droppedMessages
+}
+
 func (s *Server) bufferMessage(msg protocol.BridgeMessage) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	s.buffered = append(s.buffered, msg)
-	if len(s.buffered) > 100 {
-		s.buffered = s.buffered[len(s.buffered)-100:]
+	s.appendBufferedLocked(msg)
+}
+
+func (s *Server) appendBufferedLocked(msgs ...protocol.BridgeMessage) {
+	s.buffered = append(s.buffered, msgs...)
+	if overflow := len(s.buffered) - 100; overflow > 0 {
+		s.buffered = s.buffered[overflow:]
+		s.droppedMessages += overflow
 	}
 }
 
@@ -81,7 +94,7 @@ func (s *Server) flushBuffered(ctx context.Context, c *controlConn) {
 	for i, msg := range msgs {
 		if err := c.write(ctx, ServerMessage{Type: ServerMsgCodexToClaude, Message: &msg}); err != nil {
 			s.mu.Lock()
-			s.buffered = append(msgs[i:], s.buffered...)
+			s.appendBufferedLocked(msgs[i:]...)
 			s.mu.Unlock()
 			return
 		}

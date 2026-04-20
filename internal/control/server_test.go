@@ -3,6 +3,7 @@ package control
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"net/http/httptest"
 	"strings"
 	"sync"
@@ -74,6 +75,20 @@ func TestServer_BuffersBroadcastUntilAttach(t *testing.T) {
 	}
 	if !seenCodex {
 		t.Fatal("buffered codex message was not replayed on attach")
+	}
+}
+
+func TestServer_BufferOverflowTracksDroppedMessages(t *testing.T) {
+	h := &testHandler{status: Status{BridgeReady: true}}
+	s := NewServer(h)
+	for i := 0; i < 102; i++ {
+		s.Broadcast(context.Background(), protocol.BridgeMessage{ID: fmt.Sprintf("m%d", i), Source: protocol.SourceCodex, Content: "hello"})
+	}
+	if got := s.QueuedCount(); got != 100 {
+		t.Fatalf("QueuedCount() = %d, want 100", got)
+	}
+	if got := s.DroppedCount(); got != 2 {
+		t.Fatalf("DroppedCount() = %d, want 2", got)
 	}
 }
 

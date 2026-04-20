@@ -54,6 +54,18 @@ func TestServer_PushFailureFallsBackToPullQueue(t *testing.T) {
 	}
 }
 
+func TestServer_PreServePushOverflowCountsAsDropped(t *testing.T) {
+	s := NewServer(ServerOptions{DeliveryMode: DeliveryPush, MaxBufferedMessages: 2})
+	s.PushMessage(protocol.BridgeMessage{ID: "m1", Source: protocol.SourceCodex, Content: "one"})
+	s.PushMessage(protocol.BridgeMessage{ID: "m2", Source: protocol.SourceCodex, Content: "two"})
+	s.PushMessage(protocol.BridgeMessage{ID: "m3", Source: protocol.SourceCodex, Content: "three"})
+
+	_, dropped := s.drainQueue()
+	if dropped != 1 {
+		t.Fatalf("dropped = %d, want 1", dropped)
+	}
+}
+
 func TestServer_PushMessageBeforeServe_FlushesOnServe(t *testing.T) {
 	var out safeBuffer
 	s := NewServer(ServerOptions{DeliveryMode: DeliveryPush, MaxBufferedMessages: 2})

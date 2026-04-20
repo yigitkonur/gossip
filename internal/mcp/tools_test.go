@@ -90,3 +90,23 @@ func TestServer_GetMessagesIncludesChatIDHeader(t *testing.T) {
 		t.Fatalf("expected message body, got %q", out.String())
 	}
 }
+
+func TestServer_GetMessagesIncludesExternalDroppedDelta(t *testing.T) {
+	externalDropped := 2
+	s := NewServer(ServerOptions{DroppedCountProvider: func() int { return externalDropped }})
+	s.queue = []protocol.BridgeMessage{{ID: "m1", Source: protocol.SourceCodex, Content: "hello", Timestamp: 1}}
+
+	var out strings.Builder
+	s.writer = &out
+	s.handleGetMessagesTool(json.RawMessage(`1`))
+
+	if !strings.Contains(out.String(), "(2 older message(s) were dropped due to queue overflow)") {
+		t.Fatalf("expected overflow notice, got %q", out.String())
+	}
+
+	out.Reset()
+	s.handleGetMessagesTool(json.RawMessage(`2`))
+	if strings.Contains(out.String(), "were dropped due to queue overflow") {
+		t.Fatalf("did not expect overflow notice to repeat without new drops, got %q", out.String())
+	}
+}

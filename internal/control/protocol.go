@@ -42,11 +42,12 @@ const CloseCodeReplaced websocket.StatusCode = 4001
 
 // Status is a daemon snapshot.
 type Status struct {
-	BridgeReady        bool   `json:"bridgeReady"`
-	TuiConnected       bool   `json:"tuiConnected"`
-	ThreadID           string `json:"threadId"`
-	QueuedMessageCount int    `json:"queuedMessageCount"`
-	ProxyURL           string `json:"proxyUrl"`
-	AppServerURL       string `json:"appServerUrl"`
-	Pid                int    `json:"pid"`
+	BridgeReady         bool   `json:"bridgeReady"`
+	TuiConnected        bool   `json:"tuiConnected"`
+	ThreadID            string `json:"threadId"`
+	QueuedMessageCount  int    `json:"queuedMessageCount"`
+	DroppedMessageCount int    `json:"droppedMessageCount"`
+	ProxyURL            string `json:"proxyUrl"`
+	AppServerURL        string `json:"appServerUrl"`
+	Pid                 int    `json:"pid"`
 }

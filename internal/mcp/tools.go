@@ -117,6 +117,13 @@ func (s *Server) drainQueue() ([]protocol.BridgeMessage, int) {
 	defer s.queueMu.Unlock()
 	msgs := s.queue
 	dropped := s.droppedMessages
+	if s.opts.DroppedCountProvider != nil {
+		externalDropped := s.opts.DroppedCountProvider()
+		if externalDropped > s.lastExternalDropped {
+			dropped += externalDropped - s.lastExternalDropped
+		}
+		s.lastExternalDropped = externalDropped
+	}
 	s.queue = nil
 	s.droppedMessages = 0
 	return msgs, dropped

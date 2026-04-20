@@ -15,14 +15,15 @@ import (
 
 // ServerOptions configures an MCP server.
 type ServerOptions struct {
-	Name                string
-	Version             string
-	Instructions        string
-	ReplyHandler        func(ctx context.Context, msg protocol.BridgeMessage, requireReply bool) ReplyResult
-	ChatIDProvider      func() string
-	Logger              func(msg string)
-	DeliveryMode        DeliveryMode
-	MaxBufferedMessages int
+	Name                 string
+	Version              string
+	Instructions         string
+	ReplyHandler         func(ctx context.Context, msg protocol.BridgeMessage, requireReply bool) ReplyResult
+	ChatIDProvider       func() string
+	DroppedCountProvider func() int
+	Logger               func(msg string)
+	DeliveryMode         DeliveryMode
+	MaxBufferedMessages  int
 }
 
 // DeliveryMode identifies how the server surfaces Codex messages to Claude.
@@ -50,9 +51,10 @@ type Server struct {
 	ready          chan struct{}
 	readyCloseOnce sync.Once
 
-	queueMu         sync.Mutex
-	queue           []protocol.BridgeMessage
-	droppedMessages int
+	queueMu             sync.Mutex
+	queue               []protocol.BridgeMessage
+	droppedMessages     int
+	lastExternalDropped int
 
 	notificationSeq atomic.Int64
 

@@ -66,6 +66,9 @@ func (s *Server) bufferPushBeforeServe(msg protocol.BridgeMessage) bool {
 	}
 	if len(s.preServePush) >= s.opts.MaxBufferedMessages {
 		s.preServePush = s.preServePush[1:]
+		s.queueMu.Lock()
+		s.droppedMessages++
+		s.queueMu.Unlock()
 	}
 	s.preServePush = append(s.preServePush, msg)
 	return true

@@ -69,6 +69,7 @@ func newClaudeCmd() *cobra.Command {
 			var reconnectRunning atomic.Bool
 			var currentChatID atomic.Value
 			var currentDisabledReason atomic.Value
+			var currentDroppedCount atomic.Int64
 			currentChatID.Store("")
 			currentDisabledReason.Store(bridgeDisabledReasonNone)
 			currentDisabled := func() bridgeDisabledReason {
@@ -97,6 +98,7 @@ func newClaudeCmd() *cobra.Command {
 				},
 				OnStatus: func(status control.Status) {
 					currentChatID.Store(status.ThreadID)
+					currentDroppedCount.Store(int64(status.DroppedMessageCount))
 				},
 				OnDisconnect: func(_ int, _ string, _ time.Duration) {
 					if lc.WasKilled() {
@@ -117,6 +119,9 @@ func newClaudeCmd() *cobra.Command {
 				ChatIDProvider: func() string {
 					chatID, _ := currentChatID.Load().(string)
 					return chatID
+				},
+				DroppedCountProvider: func() int {
+					return int(currentDroppedCount.Load())
 				},
 				DeliveryMode: resolveClaudeDeliveryMode(cfg, logToStderr),
 				ReplyHandler: func(ctx context.Context, msg protocol.BridgeMessage, requireReply bool) mcp.ReplyResult {
