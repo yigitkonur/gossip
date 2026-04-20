@@ -1,6 +1,11 @@
 package main
 
-import "testing"
+import (
+	"os"
+	"path/filepath"
+	"testing"
+	"time"
+)
 
 func TestIsManagedCodexCommand(t *testing.T) {
 	tests := []struct {
@@ -23,5 +28,47 @@ func TestIsManagedCodexCommand(t *testing.T) {
 				t.Fatalf("isManagedCodexCommand(%q) = %v, want %v", tt.cmd, got, tt.want)
 			}
 		})
+	}
+}
+
+type fakeKillLifecycle struct {
+	killedFile string
+	calls      []string
+}
+
+func (f *fakeKillLifecycle) WriteKilled() error {
+	f.calls = append(f.calls, "write_killed")
+	return os.WriteFile(f.killedFile, []byte(time.Now().Format(time.RFC3339)), 0o644)
+}
+
+func (f *fakeKillLifecycle) Kill(gracefulTimeout time.Duration) (bool, error) {
+	f.calls = append(f.calls, "kill")
+	if gracefulTimeout != 3*time.Second {
+		return false, errString("unexpected graceful timeout")
+	}
+	if _, err := os.Stat(f.killedFile); err != nil {
+		return false, err
+	}
+	return true, nil
+}
+
+func TestWriteKilledAndStopDaemon_WritesSentinelBeforeKill(t *testing.T) {
+	fake := &fakeKillLifecycle{killedFile: filepath.Join(t.TempDir(), "killed")}
+
+	killed, err := writeKilledAndStopDaemon(fake, 3*time.Second)
+	if err != nil {
+		t.Fatalf("writeKilledAndStopDaemon() error = %v", err)
+	}
+	if !killed {
+		t.Fatal("writeKilledAndStopDaemon() = false, want true")
+	}
+	want := []string{"write_killed", "kill"}
+	if len(fake.calls) != len(want) {
+		t.Fatalf("calls = %#v, want %#v", fake.calls, want)
+	}
+	for i, call := range want {
+		if fake.calls[i] != call {
+			t.Fatalf("calls = %#v, want %#v", fake.calls, want)
+		}
 	}
 }
