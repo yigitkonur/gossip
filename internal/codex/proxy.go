@@ -70,6 +70,10 @@ func NewProxy(upstream *Client) *Proxy {
 
 // ServeHTTP implements http.Handler so the proxy can be mounted in any server.
 func (p *Proxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	if r.URL.Path == "/healthz" {
+		w.WriteHeader(http.StatusOK)
+		return
+	}
 	conn, err := websocket.Accept(w, r, &websocket.AcceptOptions{InsecureSkipVerify: true})
 	if err != nil {
 		return
