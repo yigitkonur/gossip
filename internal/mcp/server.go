@@ -19,6 +19,7 @@ type ServerOptions struct {
 	Version             string
 	Instructions        string
 	ReplyHandler        func(ctx context.Context, msg protocol.BridgeMessage, requireReply bool) ReplyResult
+	ChatIDProvider      func() string
 	Logger              func(msg string)
 	DeliveryMode        DeliveryMode
 	MaxBufferedMessages int
@@ -197,6 +198,15 @@ func (s *Server) bindWriter(w io.Writer) []protocol.BridgeMessage {
 	s.preServePush = nil
 	s.readyCloseOnce.Do(func() { close(s.ready) })
 	return buffered
+}
+
+func (s *Server) chatID() string {
+	if s.opts.ChatIDProvider != nil {
+		if chatID := s.opts.ChatIDProvider(); chatID != "" {
+			return chatID
+		}
+	}
+	return s.sessionID
 }
 
 func (s *Server) log(msg string) {

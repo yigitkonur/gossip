@@ -74,3 +74,19 @@ func TestServer_ReplyTool_PendingMessageHintMatchesContract(t *testing.T) {
 		t.Fatalf("expected pending-message hint, got %q", out.String())
 	}
 }
+
+func TestServer_GetMessagesIncludesChatIDHeader(t *testing.T) {
+	s := NewServer(ServerOptions{ChatIDProvider: func() string { return "thread_123" }})
+	s.queue = []protocol.BridgeMessage{{ID: "m1", Source: protocol.SourceCodex, Content: "hello", Timestamp: 1}}
+
+	var out strings.Builder
+	s.writer = &out
+	s.handleGetMessagesTool(json.RawMessage(`1`))
+
+	if !strings.Contains(out.String(), "chat_id: thread_123") {
+		t.Fatalf("expected chat_id header, got %q", out.String())
+	}
+	if !strings.Contains(out.String(), "Codex: hello") {
+		t.Fatalf("expected message body, got %q", out.String())
+	}
+}

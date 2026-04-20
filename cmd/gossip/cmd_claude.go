@@ -49,6 +49,8 @@ func newClaudeCmd() *cobra.Command {
 			var srv *mcp.Server
 			var bridgeDisabled atomic.Bool
 			var reconnectRunning atomic.Bool
+			var currentChatID atomic.Value
+			currentChatID.Store("")
 			pushSystem := func(id, content string) {
 				if srv == nil {
 					return
@@ -64,6 +66,9 @@ func newClaudeCmd() *cobra.Command {
 						srv.PushMessage(msg)
 					}
 				},
+				OnStatus: func(status control.Status) {
+					currentChatID.Store(status.ThreadID)
+				},
 				OnDisconnect: func(_ int, _ string, _ time.Duration) {
 					if lc.WasKilled() {
 						bridgeDisabled.Store(true)
@@ -78,6 +83,10 @@ func newClaudeCmd() *cobra.Command {
 				Name:         "gossip",
 				Version:      version,
 				Instructions: claudeInstructions,
+				ChatIDProvider: func() string {
+					chatID, _ := currentChatID.Load().(string)
+					return chatID
+				},
 				DeliveryMode: resolveClaudeDeliveryMode(cfg, logToStderr),
 				ReplyHandler: func(ctx context.Context, msg protocol.BridgeMessage, requireReply bool) mcp.ReplyResult {
 					if bridgeDisabled.Load() {
