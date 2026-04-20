@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"sync"
 	"sync/atomic"
+	"time"
 
 	"github.com/coder/websocket"
 	"github.com/yigitkonur/gossip/internal/protocol"
@@ -24,6 +25,7 @@ type Proxy struct {
 
 	mu              sync.Mutex
 	conns           map[connID]*tuiConn
+	secondaries     map[connID]*secondaryConn
 	currentConnID   connID
 	nextConn        atomic.Int64
 	pendingRequests []pendingServerRequest
@@ -34,7 +36,12 @@ type Proxy struct {
 
 // NewProxy returns a proxy server ready to be served via net/http.
 func NewProxy(upstream *Client) *Proxy {
-	return &Proxy{upstream: upstream, ids: newProxyIDTable(), conns: make(map[connID]*tuiConn)}
+	return &Proxy{
+		upstream:    upstream,
+		ids:         newProxyIDTable(),
+		conns:       make(map[connID]*tuiConn),
+		secondaries: make(map[connID]*secondaryConn),
+	}
 }
 
 // ServeHTTP implements http.Handler so the proxy can be mounted in any server.
@@ -47,13 +54,29 @@ func (p *Proxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 	id := connID(p.nextConn.Add(1))
 	c := &tuiConn{id: id, conn: conn}
+	var secondary *secondaryConn
+	isPrimary := false
 
 	p.mu.Lock()
 	p.conns[id] = c
-	p.currentConnID = id
-	pending := append([]pendingServerRequest(nil), p.pendingRequests...)
-	p.pendingRequests = nil
+	pending := []pendingServerRequest(nil)
+	if p.currentConnID == 0 {
+		p.currentConnID = id
+		pending = append([]pendingServerRequest(nil), p.pendingRequests...)
+		p.pendingRequests = nil
+		isPrimary = true
+	} else {
+		secondary = &secondaryConn{tui: c}
+		p.secondaries[id] = secondary
+	}
 	p.mu.Unlock()
+
+	if !isPrimary {
+		// Dedicated picker sockets talk to their own app-server websocket, which
+		// keeps their request ids isolated from the primary proxy rewrite table.
+		p.serveSecondaryConnection(r.Context(), secondary)
+		return
+	}
 
 	if p.OnTUIConnected != nil {
 		p.OnTUIConnected(int64(id))
@@ -90,10 +113,129 @@ type tuiConn struct {
 	mu   sync.Mutex
 }
 
+type secondaryConn struct {
+	tui *tuiConn
+
+	mu        sync.Mutex
+	app       *websocket.Conn
+	buffer    [][]byte
+	writeMu   sync.Mutex
+	closeOnce sync.Once
+}
+
 func (c *tuiConn) write(ctx context.Context, payload []byte) error {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	return c.conn.Write(ctx, websocket.MessageText, payload)
+}
+
+func (s *secondaryConn) attachApp(conn *websocket.Conn) [][]byte {
+	s.mu.Lock()
+	s.app = conn
+	buffered := s.buffer
+	s.buffer = nil
+	s.mu.Unlock()
+	return buffered
+}
+
+func (s *secondaryConn) writeApp(ctx context.Context, payload []byte) error {
+	s.mu.Lock()
+	app := s.app
+	if app == nil {
+		s.buffer = append(s.buffer, append([]byte(nil), payload...))
+		s.mu.Unlock()
+		return nil
+	}
+	s.mu.Unlock()
+
+	s.writeMu.Lock()
+	defer s.writeMu.Unlock()
+	return app.Write(ctx, websocket.MessageText, payload)
+}
+
+func (s *secondaryConn) close() {
+	s.closeOnce.Do(func() {
+		s.mu.Lock()
+		app := s.app
+		s.app = nil
+		s.mu.Unlock()
+		if app != nil {
+			_ = app.Close(websocket.StatusNormalClosure, "")
+		}
+		_ = s.tui.conn.Close(websocket.StatusNormalClosure, "")
+	})
+}
+
+func (p *Proxy) serveSecondaryConnection(ctx context.Context, secondary *secondaryConn) {
+	go p.connectSecondaryAppServer(secondary)
+
+	defer func() {
+		p.mu.Lock()
+		delete(p.conns, secondary.tui.id)
+		delete(p.secondaries, secondary.tui.id)
+		p.mu.Unlock()
+		p.ids.ForgetConn(secondary.tui.id)
+		secondary.close()
+	}()
+
+	for {
+		_, payload, err := secondary.tui.conn.Read(ctx)
+		if err != nil {
+			return
+		}
+		if err := secondary.writeApp(context.Background(), payload); err != nil {
+			return
+		}
+	}
+}
+
+func (p *Proxy) connectSecondaryAppServer(secondary *secondaryConn) {
+	url, ok := p.appServerURL()
+	if !ok {
+		secondary.close()
+		return
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	conn, _, err := websocket.Dial(ctx, url, nil)
+	cancel()
+	if err != nil {
+		secondary.close()
+		return
+	}
+	conn.SetReadLimit(10 * 1024 * 1024)
+
+	for _, payload := range secondary.attachApp(conn) {
+		if err := secondary.writeApp(context.Background(), payload); err != nil {
+			secondary.close()
+			return
+		}
+	}
+
+	for {
+		_, payload, err := conn.Read(context.Background())
+		if err != nil {
+			secondary.close()
+			return
+		}
+		if err := secondary.tui.write(context.Background(), payload); err != nil {
+			secondary.close()
+			return
+		}
+	}
+}
+
+func (p *Proxy) appServerURL() (string, bool) {
+	if p.upstream == nil {
+		return "", false
+	}
+	if p.upstream.proc != nil {
+		return p.upstream.proc.WebSocketURL(), true
+	}
+	if p.upstream.dialer != nil && p.upstream.dialer.url != "" {
+		return p.upstream.dialer.url, true
+	}
+	return "", false
 }
 
 func (p *Proxy) readLoop(ctx context.Context, c *tuiConn) {
