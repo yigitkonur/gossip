@@ -21,6 +21,8 @@ import (
 	"github.com/yigitkonur/gossip/internal/tui"
 )
 
+const attachStatusCooldown = 30 * time.Second
+
 type messageTemplates struct {
 	ready   string
 	waiting string
@@ -79,6 +81,7 @@ type Daemon struct {
 	attentionWindowConnID    int64
 	claudeOnlineNoticeSent   bool
 	claudeOfflineNoticeShown bool
+	lastAttachStatusSent     time.Time
 	runCancel                context.CancelFunc
 	replyRequired            bool
 	replyReceivedDuringTurn  bool
@@ -164,6 +167,14 @@ func (d *Daemon) threadID() string {
 		return ""
 	}
 	return d.codex.ActiveThreadID()
+}
+
+func (d *Daemon) shouldEmitAttachStatus(now time.Time, queuedCount int) bool {
+	d.stateMu.Lock()
+	rapidReattach := !d.lastAttachStatusSent.IsZero() && now.Sub(d.lastAttachStatusSent) < attachStatusCooldown
+	d.lastAttachStatusSent = now
+	d.stateMu.Unlock()
+	return queuedCount == 0 && !rapidReattach
 }
 
 // Run blocks until ctx is cancelled, running all layers under an errgroup.
@@ -448,6 +459,12 @@ func (d *Daemon) onStatusFlush(summary protocol.BridgeMessage) {
 }
 
 func (d *Daemon) broadcastSystem(ctx context.Context, id, content string) {
+	if d.control == nil {
+		if d.opts.Logger != nil {
+			d.opts.Logger("control server unavailable; skipping system broadcast: " + id)
+		}
+		return
+	}
 	d.control.Broadcast(ctx, protocol.BridgeMessage{ID: fmt.Sprintf("%s_%d", id, time.Now().UnixMilli()), Source: protocol.SourceCodex, Content: content, Timestamp: time.Now().UnixMilli()})
 }
 
@@ -461,10 +478,23 @@ func (d *Daemon) OnClaudeConnect() {
 	if d.statusBuf != nil {
 		d.statusBuf.Flush("claude reconnected")
 	}
+	queuedCount := 0
+	if d.control != nil {
+		queuedCount = d.control.QueuedCount()
+	}
+	shouldEmitAttachStatus := d.shouldEmitAttachStatus(time.Now(), queuedCount)
 	d.stateMu.Lock()
 	needNotify := d.tuiState.CanReply() && (!d.claudeOnlineNoticeSent || d.claudeOfflineNoticeShown) && d.codex != nil
 	codexClient := d.codex
+	threadID := d.threadID()
 	d.stateMu.Unlock()
+	if shouldEmitAttachStatus {
+		if d.tuiState.CanReply() {
+			d.broadcastSystem(context.Background(), "system_ready", d.currentReadyMessage(threadID))
+		} else {
+			d.broadcastSystem(context.Background(), "system_waiting", d.currentWaitingMessage())
+		}
+	}
 	if needNotify {
 		_, _ = codexClient.InjectMessage(context.Background(), "✅ Claude Code is online, bridge restored. Bidirectional communication can continue.")
 		d.stateMu.Lock()

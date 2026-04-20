@@ -108,6 +108,7 @@ func newClaudeCmd() *cobra.Command {
 				OnRejected: func(_ int, _ string, _ time.Duration) {
 					enterDisabledState(bridgeDisabledReasonRejected, "system_bridge_replaced", "⚠️ Gossip daemon rejected this session — another Claude Code session is already connected. Close the other session first, or run `gossip kill` to reset.")
 				},
+				MaxBackoff:      30 * time.Second,
 				ShouldReconnect: func() bool { return !bridgeDisabled.Load() && !lc.WasKilled() },
 				Logger:          logToStderr,
 			})

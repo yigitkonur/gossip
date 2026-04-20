@@ -102,3 +102,89 @@ func TestClient_RejectedDuplicateStopsReconnectLoop(t *testing.T) {
 		t.Fatal("timed out waiting for RunWithReconnect to exit")
 	}
 }
+
+func TestReconnectBackoff_IsExponentialAndCapped(t *testing.T) {
+	tests := []struct {
+		attempt int
+		max     time.Duration
+		want    time.Duration
+	}{
+		{attempt: 0, max: 500 * time.Millisecond, want: 500 * time.Millisecond},
+		{attempt: 0, max: 30 * time.Second, want: time.Second},
+		{attempt: 1, max: 30 * time.Second, want: 2 * time.Second},
+		{attempt: 2, max: 30 * time.Second, want: 4 * time.Second},
+		{attempt: 5, max: 30 * time.Second, want: 30 * time.Second},
+		{attempt: 8, max: 45 * time.Second, want: 30 * time.Second},
+	}
+
+	for _, tt := range tests {
+		if got := reconnectBackoff(tt.attempt, tt.max); got != tt.want {
+			t.Fatalf("reconnectBackoff(%d, %s) = %s, want %s", tt.attempt, tt.max, got, tt.want)
+		}
+	}
+}
+
+func TestReconnectCooldown_UsesThirtySecondWindowWithinMaxBackoff(t *testing.T) {
+	tests := []struct {
+		name string
+		max  time.Duration
+		want time.Duration
+	}{
+		{name: "smaller ceiling wins", max: 5 * time.Second, want: 5 * time.Second},
+		{name: "default ceiling stays at thirty seconds", max: 30 * time.Second, want: 30 * time.Second},
+		{name: "larger ceiling still waits thirty seconds", max: 45 * time.Second, want: 30 * time.Second},
+	}
+
+	for _, tt := range tests {
+		if got := reconnectCooldown(tt.max); got != tt.want {
+			t.Fatalf("%s: reconnectCooldown(%s) = %s, want %s", tt.name, tt.max, got, tt.want)
+		}
+	}
+}
+
+func TestClient_RunWithReconnect_StopsAfterDisconnectWhenGateCloses(t *testing.T) {
+	h := &testHandler{status: Status{BridgeReady: true}}
+	s := NewServer(h)
+	srv := httptest.NewServer(s.HTTPHandler())
+	defer srv.Close()
+	wsURL := "ws" + strings.TrimPrefix(srv.URL, "http") + "/ws"
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	var allowReconnect atomic.Bool
+	allowReconnect.Store(true)
+
+	var client *Client
+	client = NewClient(ClientOptions{
+		URL:        wsURL,
+		MaxBackoff: 10 * time.Millisecond,
+		OnStatus: func(Status) {
+			allowReconnect.Store(false)
+			client.Disconnect()
+		},
+		ShouldReconnect: func() bool { return allowReconnect.Load() },
+	})
+
+	done := make(chan error, 1)
+	go func() {
+		done <- client.RunWithReconnect(ctx)
+	}()
+
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("RunWithReconnect() error = %v", err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for RunWithReconnect to exit after disconnect")
+	}
+
+	time.Sleep(50 * time.Millisecond)
+	h.mu.Lock()
+	connects := h.connects
+	h.mu.Unlock()
+	if connects != 1 {
+		t.Fatalf("connect count = %d, want 1", connects)
+	}
+}

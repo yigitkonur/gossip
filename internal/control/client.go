@@ -13,6 +13,8 @@ import (
 	"github.com/yigitkonur/gossip/internal/protocol"
 )
 
+const reconnectDelayCap = 30 * time.Second
+
 // ClientOptions configures a Client.
 type ClientOptions struct {
 	URL             string
@@ -39,7 +41,7 @@ type Client struct {
 // NewClient constructs a Client.
 func NewClient(opts ClientOptions) *Client {
 	if opts.MaxBackoff == 0 {
-		opts.MaxBackoff = 30 * time.Second
+		opts.MaxBackoff = reconnectDelayCap
 	}
 	return &Client{opts: opts, pending: make(map[string]chan ServerMessage)}
 }
@@ -107,6 +109,7 @@ func (c *Client) Disconnect() {
 // RunWithReconnect connects and reconnects with exponential backoff until ctx is cancelled.
 func (c *Client) RunWithReconnect(ctx context.Context) error {
 	attempt := 0
+	maxBackoff := effectiveReconnectMax(c.opts.MaxBackoff)
 	for {
 		if ctx.Err() != nil {
 			return nil
@@ -120,16 +123,25 @@ func (c *Client) RunWithReconnect(ctx context.Context) error {
 				c.opts.Logger("attach failed: " + err.Error())
 			}
 			c.waitClosed(ctx)
+			if ctx.Err() != nil {
+				return nil
+			}
+			if c.opts.ShouldReconnect != nil && !c.opts.ShouldReconnect() {
+				return nil
+			}
+			delay := reconnectCooldown(maxBackoff)
+			select {
+			case <-ctx.Done():
+				return nil
+			case <-time.After(delay):
+			}
 			attempt = 0
 			continue
 		}
 		if c.opts.Logger != nil {
 			c.opts.Logger(fmt.Sprintf("control dial failed (attempt %d): %v", attempt+1, err))
 		}
-		backoff := time.Duration(1<<minInt(attempt, 5)) * time.Second
-		if backoff > c.opts.MaxBackoff {
-			backoff = c.opts.MaxBackoff
-		}
+		backoff := reconnectBackoff(attempt, maxBackoff)
 		select {
 		case <-ctx.Done():
 			return nil
@@ -137,6 +149,30 @@ func (c *Client) RunWithReconnect(ctx context.Context) error {
 		}
 		attempt++
 	}
+}
+
+func effectiveReconnectMax(max time.Duration) time.Duration {
+	if max <= 0 || max > reconnectDelayCap {
+		return reconnectDelayCap
+	}
+	return max
+}
+
+func reconnectCooldown(max time.Duration) time.Duration {
+	max = effectiveReconnectMax(max)
+	if max < reconnectDelayCap {
+		return max
+	}
+	return reconnectDelayCap
+}
+
+func reconnectBackoff(attempt int, max time.Duration) time.Duration {
+	max = effectiveReconnectMax(max)
+	backoff := time.Duration(1<<minInt(attempt, 5)) * time.Second
+	if backoff > max {
+		return max
+	}
+	return backoff
 }
 
 func (c *Client) waitClosed(ctx context.Context) {
