@@ -24,14 +24,15 @@ func newStatusCmd() *cobra.Command {
 			req, _ := http.NewRequestWithContext(ctx, http.MethodGet, lc.HealthURL(), nil)
 			resp, err := http.DefaultClient.Do(req)
 			if err != nil {
-				fmt.Println("daemon: not running")
+				fmt.Println(ui.red("●") + " daemon: " + ui.bold("not running"))
 				return nil
 			}
 			defer resp.Body.Close()
 			var status map[string]any
 			_ = json.NewDecoder(resp.Body).Decode(&status)
+			fmt.Println(ui.green("●") + " daemon: " + ui.bold("running"))
 			out, _ := json.MarshalIndent(status, "", "  ")
-			fmt.Println(string(out))
+			fmt.Println(ui.dim(string(out)))
 			return nil
 		},
 	}

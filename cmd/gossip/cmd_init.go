@@ -44,19 +44,18 @@ func runInit(out io.Writer) error {
 		return err
 	}
 
-	fmt.Fprintln(out, "Gossip Init")
-	fmt.Fprintln(out)
-	fmt.Fprintln(out, "Project config:")
+	fmt.Fprintln(out, paintedBanner())
+	fmt.Fprintln(out, ui.bold("Project config:"))
 	if len(created) == 0 {
-		fmt.Fprintln(out, "  ⚠️ No files created — .gossip/ already populated.")
+		fmt.Fprintln(out, "  "+ui.yellow("⚠️")+" No files created — .gossip/ already populated.")
 	} else {
 		for _, p := range created {
-			fmt.Fprintf(out, "  ✅ Created: %s\n", p)
+			fmt.Fprintf(out, "  %s Created: %s\n", ui.green("✅"), ui.cyan(p))
 		}
 	}
 	fmt.Fprintln(out)
 
-	fmt.Fprintln(out, "Dependency checks:")
+	fmt.Fprintln(out, ui.bold("Dependency checks:"))
 	checkFailed := false
 
 	claudeOutput, err := initExecCommand("claude", "--version")
