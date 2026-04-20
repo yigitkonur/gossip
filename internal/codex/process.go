@@ -10,9 +10,21 @@ import (
 	"io"
 	"net/http"
 	"os/exec"
+	"strconv"
+	"strings"
 	"sync"
 	"syscall"
 	"time"
+)
+
+var (
+	processLookPath = exec.LookPath
+	processCommand  = exec.CommandContext
+	processRun      = func(ctx context.Context, name string, args ...string) (string, error) {
+		cmd := exec.CommandContext(ctx, name, args...)
+		out, err := cmd.CombinedOutput()
+		return strings.TrimSpace(string(out)), err
+	}
 )
 
 // ProcessOptions configures a Codex app-server subprocess.
@@ -60,11 +72,14 @@ func (p *Process) Start(ctx context.Context) error {
 		return errors.New("codex process already started")
 	}
 
-	if _, err := exec.LookPath(p.opts.Binary); err != nil {
+	if _, err := processLookPath(p.opts.Binary); err != nil {
+		return err
+	}
+	if err := p.cleanupPort(ctx); err != nil {
 		return err
 	}
 
-	cmd := exec.CommandContext(ctx, p.opts.Binary, "app-server", "--listen", p.WebSocketURL())
+	cmd := processCommand(ctx, p.opts.Binary, "app-server", "--listen", p.WebSocketURL())
 	stdout, err := cmd.StdoutPipe()
 	if err != nil {
 		return fmt.Errorf("codex stdout pipe: %w", err)
@@ -120,6 +135,93 @@ func (p *Process) Done() <-chan struct{} {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	return p.done
+}
+
+func (p *Process) cleanupPort(ctx context.Context) error {
+	pids, err := p.portPIDs(ctx)
+	if err != nil {
+		return err
+	}
+	if len(pids) == 0 {
+		return nil
+	}
+
+	staleCodex := make([]int, 0, len(pids))
+	foreign := make([]int, 0)
+	for _, pid := range pids {
+		cmdline, err := p.processCommandLine(ctx, pid)
+		if err != nil {
+			continue
+		}
+		if strings.Contains(cmdline, "codex") && strings.Contains(cmdline, "app-server") {
+			staleCodex = append(staleCodex, pid)
+			continue
+		}
+		foreign = append(foreign, pid)
+	}
+	if len(foreign) > 0 {
+		return fmt.Errorf("port %d is already in use by non-Codex process(es): PID(s) %s", p.opts.Port, joinPIDs(foreign))
+	}
+
+	for _, pid := range staleCodex {
+		if _, err := processRun(ctx, "kill", strconv.Itoa(pid)); err != nil && p.opts.Logger != nil {
+			p.opts.Logger("stderr", fmt.Sprintf("failed to kill stale codex app-server pid %d: %v", pid, err))
+		}
+	}
+	if len(staleCodex) == 0 {
+		return nil
+	}
+
+	time.Sleep(500 * time.Millisecond)
+	remaining, err := p.portPIDs(ctx)
+	if err != nil {
+		return err
+	}
+	if len(remaining) > 0 {
+		return fmt.Errorf("port %d is still occupied after cleanup: PID(s) %s", p.opts.Port, joinPIDs(remaining))
+	}
+	return nil
+}
+
+func (p *Process) portPIDs(ctx context.Context) ([]int, error) {
+	out, err := processRun(ctx, "lsof", "-ti", ":"+strconv.Itoa(p.opts.Port))
+	if err != nil {
+		var exitErr *exec.ExitError
+		if errors.As(err, &exitErr) && len(strings.TrimSpace(string(exitErr.Stderr))) == 0 && strings.TrimSpace(out) == "" {
+			return nil, nil
+		}
+		return nil, err
+	}
+	if strings.TrimSpace(out) == "" {
+		return nil, nil
+	}
+
+	lines := strings.Split(out, "\n")
+	pids := make([]int, 0, len(lines))
+	for _, line := range lines {
+		line = strings.TrimSpace(line)
+		if line == "" {
+			continue
+		}
+		pid, err := strconv.Atoi(line)
+		if err != nil {
+			return nil, err
+		}
+		pids = append(pids, pid)
+	}
+	return pids, nil
+}
+
+func (p *Process) processCommandLine(ctx context.Context, pid int) (string, error) {
+	return processRun(ctx, "ps", "-p", strconv.Itoa(pid), "-o", "command=")
+}
+
+func joinPIDs(pids []int) string {
+	parts := make([]string, 0, len(pids))
+	for _, pid := range pids {
+		parts = append(parts, strconv.Itoa(pid))
+	}
+	return strings.Join(parts, ", ")
 }
 
 func (p *Process) waitForHealthy(ctx context.Context) error {
