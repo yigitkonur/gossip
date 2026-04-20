@@ -24,6 +24,7 @@ func newRootCmd() *cobra.Command {
 	root.AddCommand(
 		newVersionCmd(),
 		newInitCmd(),
+		newDevCmd(),
 		newCodexCmd(),
 		newClaudeCmd(),
 		newDaemonCmd(),
