@@ -25,6 +25,9 @@ func TestService_InitDefaults_CreatesFiles(t *testing.T) {
 	if cfg.Daemon.Port != 4500 {
 		t.Errorf("Daemon.Port = %d", cfg.Daemon.Port)
 	}
+	if cfg.Agents["claude"].Mode != "pull" {
+		t.Fatalf("Claude mode = %q, want pull", cfg.Agents["claude"].Mode)
+	}
 }
 
 func TestService_LoadOrDefault_ReturnsDefaultIfMissing(t *testing.T) {

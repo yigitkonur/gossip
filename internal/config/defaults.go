@@ -5,7 +5,7 @@ var DefaultConfig = Config{
 	Version: "1.0",
 	Daemon:  DaemonConfig{Port: 4500, ProxyPort: 4501},
 	Agents: map[string]AgentConfig{
-		"claude": {Role: "Reviewer, Planner", Mode: "push"},
+		"claude": {Role: "Reviewer, Planner", Mode: "pull"},
 		"codex":  {Role: "Implementer, Executor"},
 	},
 	Markers: []string{"IMPORTANT", "STATUS", "FYI"},
