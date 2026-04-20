@@ -22,6 +22,7 @@ type ClientOptions struct {
 	OnStatus        func(status Status)
 	OnDisconnect    func(code int, reason string, uptime time.Duration)
 	OnRejected      func(code int, reason string, uptime time.Duration)
+	OnReconnect     func()
 	Logger          func(msg string)
 	MaxBackoff      time.Duration
 	ShouldReconnect func() bool
@@ -110,6 +111,7 @@ func (c *Client) Disconnect() {
 func (c *Client) RunWithReconnect(ctx context.Context) error {
 	attempt := 0
 	maxBackoff := effectiveReconnectMax(c.opts.MaxBackoff)
+	connectedOnce := false
 	for {
 		if ctx.Err() != nil {
 			return nil
@@ -119,9 +121,15 @@ func (c *Client) RunWithReconnect(ctx context.Context) error {
 		}
 		err := c.Connect(ctx)
 		if err == nil {
-			if err := c.AttachClaude(ctx); err != nil && c.opts.Logger != nil {
-				c.opts.Logger("attach failed: " + err.Error())
+			attachErr := c.AttachClaude(ctx)
+			if attachErr != nil {
+				if c.opts.Logger != nil {
+					c.opts.Logger("attach failed: " + attachErr.Error())
+				}
+			} else if connectedOnce && c.opts.OnReconnect != nil {
+				c.opts.OnReconnect()
 			}
+			connectedOnce = true
 			c.waitClosed(ctx)
 			if ctx.Err() != nil {
 				return nil
@@ -163,6 +171,7 @@ func reconnectCooldown(max time.Duration) time.Duration {
 	if max < reconnectDelayCap {
 		return max
 	}
+	// Divergence: we keep a 30s post-disconnect reconnect floor to prevent bridge reconnect churn, even though current TS retries sooner.
 	return reconnectDelayCap
 }
 

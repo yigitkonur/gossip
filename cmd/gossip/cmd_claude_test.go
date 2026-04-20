@@ -2,7 +2,9 @@ package main
 
 import (
 	"strings"
+	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/yigitkonur/gossip/internal/config"
 	"github.com/yigitkonur/gossip/internal/mcp"
@@ -72,4 +74,31 @@ func TestClaudeInstructionsIncludeSentinels(t *testing.T) {
 			t.Fatalf("claudeInstructions missing %q", needle)
 		}
 	}
+}
+
+func TestShouldSendReconnectNotice(t *testing.T) {
+	now := time.Unix(1_700_000_000, 0)
+
+	t.Run("first notification passes", func(t *testing.T) {
+		var last atomic.Int64
+		if !shouldSendReconnectNotice(&last, now) {
+			t.Fatal("first reconnect notice should be allowed")
+		}
+	})
+
+	t.Run("cooldown suppresses duplicate", func(t *testing.T) {
+		var last atomic.Int64
+		last.Store(now.UnixMilli())
+		if shouldSendReconnectNotice(&last, now.Add(reconnectNotifyCooldown-time.Millisecond)) {
+			t.Fatal("duplicate reconnect notice should be suppressed inside cooldown")
+		}
+	})
+
+	t.Run("cooldown expiry allows another notice", func(t *testing.T) {
+		var last atomic.Int64
+		last.Store(now.UnixMilli())
+		if !shouldSendReconnectNotice(&last, now.Add(reconnectNotifyCooldown)) {
+			t.Fatal("reconnect notice should be allowed after cooldown expires")
+		}
+	})
 }

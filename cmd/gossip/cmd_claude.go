@@ -17,7 +17,8 @@ import (
 	"github.com/yigitkonur/gossip/internal/statedir"
 )
 
-const claudeInstructions = `Codex is an AI coding agent (OpenAI) running in a separate session on the same machine.
+const (
+	claudeInstructions = `Codex is an AI coding agent (OpenAI) running in a separate session on the same machine.
 
 ## Message delivery
 Messages from Codex may arrive in two ways depending on the connection mode:
@@ -49,6 +50,8 @@ Default roles in this setup:
 - When you see '⏳ Codex is working', do NOT call the reply tool — wait for '✅ Codex finished'.
 - After Codex finishes a turn, you have an attention window to review and respond before new messages arrive.
 - If the reply tool returns a busy error, Codex is still executing — wait and try again later.`
+	reconnectNotifyCooldown = 30 * time.Second
+)
 
 func newClaudeCmd() *cobra.Command {
 	return &cobra.Command{
@@ -70,6 +73,8 @@ func newClaudeCmd() *cobra.Command {
 			var currentChatID atomic.Value
 			var currentDisabledReason atomic.Value
 			var currentDroppedCount atomic.Int64
+			var lastDisconnectNotify atomic.Int64
+			var lastReconnectNotify atomic.Int64
 			currentChatID.Store("")
 			currentDisabledReason.Store(bridgeDisabledReasonNone)
 			currentDisabled := func() bridgeDisabledReason {
@@ -101,12 +106,27 @@ func newClaudeCmd() *cobra.Command {
 					currentDroppedCount.Store(int64(status.DroppedMessageCount))
 				},
 				OnDisconnect: func(_ int, _ string, _ time.Duration) {
+					if ctx.Err() != nil || bridgeDisabled.Load() {
+						return
+					}
 					if lc.WasKilled() {
 						enterDisabledState(bridgeDisabledReasonKilled, "system_bridge_disabled", "⛔ Gossip was stopped by `gossip kill`. Bridge is staying idle. Restart Claude Code (`gossip claude`), switch to a new conversation, or run /resume to reconnect.")
+						return
+					}
+					if shouldSendReconnectNotice(&lastDisconnectNotify, time.Now()) {
+						pushSystem("system_daemon_disconnected", "⚠️ Gossip daemon control connection lost. Attempting to reconnect...")
 					}
 				},
 				OnRejected: func(_ int, _ string, _ time.Duration) {
 					enterDisabledState(bridgeDisabledReasonRejected, "system_bridge_replaced", "⚠️ Gossip daemon rejected this session — another Claude Code session is already connected. Close the other session first, or run `gossip kill` to reset.")
+				},
+				OnReconnect: func() {
+					if ctx.Err() != nil || bridgeDisabled.Load() {
+						return
+					}
+					if shouldSendReconnectNotice(&lastReconnectNotify, time.Now()) {
+						pushSystem("system_daemon_reconnected", "✅ Gossip daemon reconnected successfully.")
+					}
 				},
 				MaxBackoff:      30 * time.Second,
 				ShouldReconnect: func() bool { return !bridgeDisabled.Load() && !lc.WasKilled() },
@@ -190,6 +210,20 @@ func newClaudeCmd() *cobra.Command {
 
 			return srv.Serve(ctx, os.Stdin, os.Stdout)
 		},
+	}
+}
+
+func shouldSendReconnectNotice(last *atomic.Int64, now time.Time) bool {
+	nowMillis := now.UnixMilli()
+	minAllowed := now.Add(-reconnectNotifyCooldown).UnixMilli()
+	for {
+		prev := last.Load()
+		if prev > minAllowed {
+			return false
+		}
+		if last.CompareAndSwap(prev, nowMillis) {
+			return true
+		}
 	}
 }
 
