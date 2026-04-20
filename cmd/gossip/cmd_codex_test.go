@@ -1,6 +1,9 @@
 package main
 
 import (
+	"context"
+	"net/http"
+	"net/http/httptest"
 	"reflect"
 	"strings"
 	"testing"
@@ -10,6 +13,36 @@ func TestNewCodexCmd_DisablesFlagParsing(t *testing.T) {
 	cmd := newCodexCmd()
 	if !cmd.DisableFlagParsing {
 		t.Fatal("codex command should disable Cobra flag parsing so native Codex flags pass through")
+	}
+}
+
+func TestProxyHealthURL(t *testing.T) {
+	got, err := proxyHealthURL("ws://127.0.0.1:4501/socket")
+	if err != nil {
+		t.Fatalf("proxyHealthURL() error = %v", err)
+	}
+	if got != "http://127.0.0.1:4501/healthz" {
+		t.Fatalf("proxyHealthURL() = %q", got)
+	}
+}
+
+func TestWaitForProxyReady_UsesHealthzHTTPProbe(t *testing.T) {
+	requests := 0
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		requests++
+		if r.URL.Path != "/healthz" {
+			t.Fatalf("path = %q, want /healthz", r.URL.Path)
+		}
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer srv.Close()
+
+	proxyURL := "ws" + strings.TrimPrefix(srv.URL, "http") + "/socket"
+	if err := waitForProxyReady(context.Background(), proxyURL); err != nil {
+		t.Fatalf("waitForProxyReady() error = %v", err)
+	}
+	if requests == 0 {
+		t.Fatal("expected at least one HTTP readiness probe")
 	}
 }
 

@@ -3,16 +3,17 @@ package main
 import (
 	"context"
 	"fmt"
+	"net/http"
+	"net/url"
 	"os"
 	"os/exec"
 	"strings"
 	"time"
 
-	"github.com/coder/websocket"
+	"github.com/spf13/cobra"
 	"github.com/yigitkonur/gossip/internal/config"
 	"github.com/yigitkonur/gossip/internal/daemon"
 	"github.com/yigitkonur/gossip/internal/statedir"
-	"github.com/spf13/cobra"
 )
 
 type codexArgsResult struct {
@@ -69,17 +70,28 @@ func newCodexCmd() *cobra.Command {
 }
 
 func waitForProxyReady(ctx context.Context, proxyURL string) error {
-	deadline := time.Now().Add(10 * time.Second)
-	for {
-		dialCtx, cancel := context.WithTimeout(ctx, time.Second)
-		conn, _, err := websocket.Dial(dialCtx, proxyURL, nil)
+	healthURL, err := proxyHealthURL(proxyURL)
+	if err != nil {
+		return err
+	}
+	var lastErr error
+	for attempt := 0; attempt < 40; attempt++ {
+		reqCtx, cancel := context.WithTimeout(ctx, time.Second)
+		req, err := http.NewRequestWithContext(reqCtx, http.MethodGet, healthURL, nil)
+		if err != nil {
+			cancel()
+			return err
+		}
+		resp, err := http.DefaultClient.Do(req)
 		cancel()
 		if err == nil {
-			_ = conn.Close(websocket.StatusNormalClosure, "")
-			return nil
-		}
-		if time.Now().After(deadline) {
-			return err
+			resp.Body.Close()
+			if resp.StatusCode == http.StatusOK {
+				return nil
+			}
+			lastErr = fmt.Errorf("proxy health check returned %s", resp.Status)
+		} else {
+			lastErr = err
 		}
 		select {
 		case <-ctx.Done():
@@ -87,6 +99,26 @@ func waitForProxyReady(ctx context.Context, proxyURL string) error {
 		case <-time.After(250 * time.Millisecond):
 		}
 	}
+	return lastErr
+}
+
+func proxyHealthURL(proxyURL string) (string, error) {
+	parsed, err := url.Parse(proxyURL)
+	if err != nil {
+		return "", err
+	}
+	switch parsed.Scheme {
+	case "ws":
+		parsed.Scheme = "http"
+	case "wss":
+		parsed.Scheme = "https"
+	default:
+		return "", fmt.Errorf("unsupported proxy scheme %q", parsed.Scheme)
+	}
+	parsed.Path = "/healthz"
+	parsed.RawQuery = ""
+	parsed.Fragment = ""
+	return parsed.String(), nil
 }
 
 func logToStderr(msg string) { fmt.Fprintln(os.Stderr, msg) }
