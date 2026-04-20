@@ -98,6 +98,12 @@ func TestTurnStartedMessageMatchesTS(t *testing.T) {
 	}
 }
 
+func TestReplyMissingMessageMatchesTS(t *testing.T) {
+	if replyMissingMessage != "⚠️ Codex completed the turn without sending a reply (require_reply was set). Codex may not have generated an agentMessage. You may want to retry or rephrase." {
+		t.Fatalf("replyMissingMessage = %q", replyMissingMessage)
+	}
+}
+
 func TestDaemon_ShouldEmitAttachStatus_UsesCooldownAndBufferedGate(t *testing.T) {
 	d := New(Options{})
 	now := time.Unix(100, 0)

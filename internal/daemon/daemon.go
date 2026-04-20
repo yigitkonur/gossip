@@ -25,6 +25,7 @@ const (
 	attachStatusCooldown = 30 * time.Second
 	codexStopTimeout     = 3 * time.Second
 	turnStartedMessage   = "⏳ Codex is working on the current task. Wait for completion before sending a reply."
+	replyMissingMessage  = "⚠️ Codex completed the turn without sending a reply (require_reply was set). Codex may not have generated an agentMessage. You may want to retry or rephrase."
 )
 
 type messageTemplates struct {
@@ -300,7 +301,7 @@ func (d *Daemon) handleCodexEvent(ctx context.Context, ev codex.Event) {
 		d.replyReceivedDuringTurn = false
 		d.stateMu.Unlock()
 		if replyRequired && !replyReceived {
-			d.broadcastSystem(ctx, "system_reply_missing", "⚠️ Codex completed the turn without sending a reply while require_reply was set.")
+			d.broadcastSystem(ctx, "system_reply_missing", replyMissingMessage)
 		}
 		d.broadcastSystem(ctx, "system_turn_completed", "✅ Codex finished the current turn. You can reply now if needed.")
 		d.startAttentionWindow(0)
