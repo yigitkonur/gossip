@@ -43,7 +43,9 @@ func (s *Server) pushViaChannel(msg protocol.BridgeMessage) {
 		s.log("channel notification marshal: " + err.Error())
 		return
 	}
-	s.write(Notification{JSONRPC: "2.0", Method: "notifications/claude/channel", Params: raw})
+	if err := s.write(Notification{JSONRPC: "2.0", Method: "notifications/claude/channel", Params: raw}); err != nil {
+		s.queueForPull(msg)
+	}
 }
 
 func (s *Server) queueForPull(msg protocol.BridgeMessage) {

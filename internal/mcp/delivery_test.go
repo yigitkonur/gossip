@@ -2,6 +2,7 @@ package mcp
 
 import (
 	"context"
+	"encoding/json"
 	"io"
 	"strings"
 	"testing"
@@ -28,6 +29,28 @@ func TestServer_PullMode_QueuesMessages(t *testing.T) {
 	}
 	if dropped != 2 {
 		t.Errorf("dropped = %d, want 2", dropped)
+	}
+}
+
+func TestServer_PushFailureFallsBackToPullQueue(t *testing.T) {
+	s := NewServer(ServerOptions{DeliveryMode: DeliveryPush, MaxBufferedMessages: 3})
+	s.writer = errorWriter{err: io.ErrClosedPipe}
+
+	s.PushMessage(protocol.BridgeMessage{ID: "m1", Source: protocol.SourceCodex, Content: "hello", Timestamp: time.Now().UnixMilli()})
+
+	var out strings.Builder
+	s.writer = &out
+	s.handleGetMessagesTool(json.RawMessage(`1`))
+
+	line := firstLine(out.String())
+	if line == "" {
+		t.Fatalf("no response written, got %q", out.String())
+	}
+	if !strings.Contains(out.String(), "[1 new message from Codex]") {
+		t.Fatalf("expected queued message header, got %q", out.String())
+	}
+	if !strings.Contains(out.String(), "Codex: hello") {
+		t.Fatalf("expected queued message content, got %q", out.String())
 	}
 }
 
