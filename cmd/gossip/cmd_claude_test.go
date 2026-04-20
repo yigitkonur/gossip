@@ -10,6 +10,38 @@ import (
 	"github.com/yigitkonur/gossip/internal/mcp"
 )
 
+func TestMaxBufferedMessagesFromEnv_PrimaryWinsOverAlias(t *testing.T) {
+	t.Setenv("GOSSIP_MAX_BUFFERED_MESSAGES", "250")
+	t.Setenv("AGENTBRIDGE_MAX_BUFFERED_MESSAGES", "50")
+	if got := maxBufferedMessagesFromEnv(); got != 250 {
+		t.Fatalf("maxBufferedMessagesFromEnv() = %d, want 250", got)
+	}
+}
+
+func TestMaxBufferedMessagesFromEnv_LegacyAliasHonored(t *testing.T) {
+	t.Setenv("GOSSIP_MAX_BUFFERED_MESSAGES", "")
+	t.Setenv("AGENTBRIDGE_MAX_BUFFERED_MESSAGES", "75")
+	if got := maxBufferedMessagesFromEnv(); got != 75 {
+		t.Fatalf("maxBufferedMessagesFromEnv() = %d, want 75", got)
+	}
+}
+
+func TestMaxBufferedMessagesFromEnv_UnsetReturnsZero(t *testing.T) {
+	t.Setenv("GOSSIP_MAX_BUFFERED_MESSAGES", "")
+	t.Setenv("AGENTBRIDGE_MAX_BUFFERED_MESSAGES", "")
+	if got := maxBufferedMessagesFromEnv(); got != 0 {
+		t.Fatalf("maxBufferedMessagesFromEnv() = %d, want 0 (server falls back to 100)", got)
+	}
+}
+
+func TestMaxBufferedMessagesFromEnv_NonPositiveIgnored(t *testing.T) {
+	t.Setenv("GOSSIP_MAX_BUFFERED_MESSAGES", "0")
+	t.Setenv("AGENTBRIDGE_MAX_BUFFERED_MESSAGES", "-5")
+	if got := maxBufferedMessagesFromEnv(); got != 0 {
+		t.Fatalf("maxBufferedMessagesFromEnv() = %d, want 0 for non-positive inputs", got)
+	}
+}
+
 func TestResolveClaudeDeliveryMode(t *testing.T) {
 	cfg := config.DefaultConfig
 	cfg.Agents["claude"] = config.AgentConfig{Role: "Reviewer, Planner", Mode: "pull"}

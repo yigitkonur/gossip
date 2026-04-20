@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"os"
+	"strconv"
 	"strings"
 	"sync/atomic"
 	"time"
@@ -143,7 +144,8 @@ func newClaudeCmd() *cobra.Command {
 				DroppedCountProvider: func() int {
 					return int(currentDroppedCount.Load())
 				},
-				DeliveryMode: resolveClaudeDeliveryMode(cfg, logToStderr),
+				DeliveryMode:        resolveClaudeDeliveryMode(cfg, logToStderr),
+				MaxBufferedMessages: maxBufferedMessagesFromEnv(),
 				ReplyHandler: func(ctx context.Context, msg protocol.BridgeMessage, requireReply bool) mcp.ReplyResult {
 					if bridgeDisabled.Load() {
 						return mcp.ReplyResult{Success: false, Error: disabledReplyError(currentDisabled())}
@@ -224,6 +226,17 @@ func shouldSendReconnectNotice(last *atomic.Int64, now time.Time) bool {
 			return true
 		}
 	}
+}
+
+func maxBufferedMessagesFromEnv() int {
+	for _, key := range []string{"GOSSIP_MAX_BUFFERED_MESSAGES", "AGENTBRIDGE_MAX_BUFFERED_MESSAGES"} {
+		if raw := os.Getenv(key); raw != "" {
+			if n, err := strconv.Atoi(raw); err == nil && n > 0 {
+				return n
+			}
+		}
+	}
+	return 0
 }
 
 func resolveClaudeDeliveryMode(cfg config.Config, logger func(string)) mcp.DeliveryMode {
