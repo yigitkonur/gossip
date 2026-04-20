@@ -12,12 +12,12 @@ type StateDir struct {
 	dir string
 }
 
-// New resolves the state directory, honoring GOSSIP_STATE_DIR and XDG.
+// New resolves the state directory, honoring GOSSIP_STATE_DIR, AGENTBRIDGE_STATE_DIR, and XDG.
 func New(override string) *StateDir {
 	var dir string
 	if override != "" {
 		dir = override
-	} else if envOverride := os.Getenv("GOSSIP_STATE_DIR"); envOverride != "" {
+	} else if envOverride, ok := firstNonEmptyEnv("GOSSIP_STATE_DIR", "AGENTBRIDGE_STATE_DIR"); ok {
 		dir = envOverride
 	} else {
 		home, err := os.UserHomeDir()
@@ -37,6 +37,15 @@ func New(override string) *StateDir {
 	return &StateDir{dir: dir}
 }
 
+func firstNonEmptyEnv(keys ...string) (string, bool) {
+	for _, key := range keys {
+		if value := os.Getenv(key); value != "" {
+			return value, true
+		}
+	}
+	return "", false
+}
+
 // Ensure creates the directory if needed.
 func (s *StateDir) Ensure() error { return os.MkdirAll(s.dir, 0o755) }
 
@@ -52,7 +61,7 @@ func (s *StateDir) LockFile() string { return filepath.Join(s.dir, "daemon.lock"
 // StatusFile returns the daemon status JSON file path.
 func (s *StateDir) StatusFile() string { return filepath.Join(s.dir, "status.json") }
 
-// PortsFile returns the daemon port map JSON file path.
+// PortsFile returns the daemon port map JSON file.
 func (s *StateDir) PortsFile() string { return filepath.Join(s.dir, "ports.json") }
 
 // LogFile returns the combined log file path.

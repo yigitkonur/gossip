@@ -32,3 +32,21 @@ func TestStateDir_PathsAreUnderDir(t *testing.T) {
 		}
 	}
 }
+
+func TestStateDir_UsesAgentBridgeAliasWhenPrimaryUnset(t *testing.T) {
+	t.Setenv("GOSSIP_STATE_DIR", "")
+	t.Setenv("AGENTBRIDGE_STATE_DIR", filepath.Join(t.TempDir(), "agentbridge-state"))
+	if got := New("").Dir(); got != os.Getenv("AGENTBRIDGE_STATE_DIR") {
+		t.Fatalf("New(\"\").Dir() = %q, want AGENTBRIDGE_STATE_DIR %q", got, os.Getenv("AGENTBRIDGE_STATE_DIR"))
+	}
+}
+
+func TestStateDir_PrimaryEnvWinsOverAlias(t *testing.T) {
+	primary := filepath.Join(t.TempDir(), "gossip-state")
+	alias := filepath.Join(t.TempDir(), "agentbridge-state")
+	t.Setenv("GOSSIP_STATE_DIR", primary)
+	t.Setenv("AGENTBRIDGE_STATE_DIR", alias)
+	if got := New("").Dir(); got != primary {
+		t.Fatalf("New(\"\").Dir() = %q, want GOSSIP_STATE_DIR %q", got, primary)
+	}
+}
