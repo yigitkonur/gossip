@@ -101,13 +101,16 @@ func TestParseMarker_ParityEdgeCases(t *testing.T) {
 func TestBridgeContractReminderIncludesSentinels(t *testing.T) {
 	for _, needle := range []string{
 		"[Git Operations — FORBIDDEN]",
-		"Architect→Builder→Critic",
-		"Hypothesis→Experiment→Interpretation",
+		"Architect -> Builder -> Critic",
+		"Hypothesis -> Experiment -> Interpretation",
 		"My independent view is:",
 	} {
 		if !strings.Contains(BridgeContractReminder, needle) {
 			t.Fatalf("BridgeContractReminder missing %q", needle)
 		}
+	}
+	if strings.Contains(BridgeContractReminder, "Architect→Builder→Critic") {
+		t.Fatalf("BridgeContractReminder should use TS ASCII arrows: %q", BridgeContractReminder)
 	}
 	if !strings.Contains(ReplyRequiredInstruction, "This is a mandatory requirement") {
 		t.Fatalf("ReplyRequiredInstruction missing mandatory-reply guidance: %q", ReplyRequiredInstruction)

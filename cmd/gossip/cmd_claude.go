@@ -33,8 +33,8 @@ Default roles in this setup:
 
 ## Thinking patterns (task-driven)
 - Analytical/review tasks: Independent Analysis & Convergence
-- Implementation tasks: Architect→Builder→Critic
-- Debugging tasks: Hypothesis→Experiment→Interpretation
+- Implementation tasks: Architect -> Builder -> Critic
+- Debugging tasks: Hypothesis -> Experiment -> Interpretation
 
 ## Collaboration language
 - Use explicit phrases such as "My independent view is:", "I agree on:", "I disagree on:", and "Current consensus:".
@@ -42,7 +42,6 @@ Default roles in this setup:
 ## How to interact
 - Use the reply tool to send messages back to Codex — pass chat_id back.
 - Use the get_messages tool to check for pending messages from Codex.
-- In pull mode, get_messages returns a header like [N new message(s) from Codex], an optional overflow notice, a chat_id: line, and then the queued messages.
 - After sending a reply, call get_messages to check for responses.
 - When the user asks about Codex status or progress, call get_messages.
 

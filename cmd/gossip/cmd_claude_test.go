@@ -66,13 +66,18 @@ func TestResolveClaudeDeliveryMode(t *testing.T) {
 func TestClaudeInstructionsIncludeSentinels(t *testing.T) {
 	for _, needle := range []string{
 		"## Message delivery",
-		"Architect→Builder→Critic",
-		"chat_id: line",
+		"Architect -> Builder -> Critic",
 		"Current consensus:",
 	} {
 		if !strings.Contains(claudeInstructions, needle) {
 			t.Fatalf("claudeInstructions missing %q", needle)
 		}
+	}
+	if strings.Contains(claudeInstructions, "chat_id: line") {
+		t.Fatalf("claudeInstructions should not include the extra pull-mode header sentence: %q", claudeInstructions)
+	}
+	if strings.Contains(claudeInstructions, "Architect→Builder→Critic") {
+		t.Fatalf("claudeInstructions should use TS ASCII arrows: %q", claudeInstructions)
 	}
 }
 
