@@ -68,6 +68,26 @@ func TestDaemon_AttentionWindowPausesStatusFlushesUntilExpiry(t *testing.T) {
 	}
 }
 
+func TestDaemon_MessageTemplatesSupportOverrides(t *testing.T) {
+	d := New(Options{ProxyPort: 4601})
+	if got := d.currentReadyMessage("thread_123"); got != "✅ Codex bridge ready (thread thread_123)" {
+		t.Fatalf("currentReadyMessage() = %q", got)
+	}
+	if got := d.currentWaitingMessage(); got != "⏳ Waiting for Codex TUI to connect. Run in another terminal:\ncodex --enable tui_app_server --remote ws://127.0.0.1:4601" {
+		t.Fatalf("currentWaitingMessage() = %q", got)
+	}
+
+	d.SetReadyMessageTemplate("ready {thread_id}")
+	d.SetWaitingMessageTemplate("waiting")
+
+	if got := d.currentReadyMessage("thread_456"); got != "ready thread_456" {
+		t.Fatalf("overridden currentReadyMessage() = %q", got)
+	}
+	if got := d.currentWaitingMessage(); got != "waiting" {
+		t.Fatalf("overridden currentWaitingMessage() = %q", got)
+	}
+}
+
 func TestDaemon_WritesAndRemovesPortsFile(t *testing.T) {
 	sd := statedir.New(t.TempDir())
 	d := New(Options{StateDir: sd, AppPort: 4600, ProxyPort: 4601, ControlPort: 4602})

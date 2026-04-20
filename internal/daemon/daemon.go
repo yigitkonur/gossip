@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"net/http"
 	"os"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -19,6 +20,11 @@ import (
 	"github.com/yigitkonur/gossip/internal/statedir"
 	"github.com/yigitkonur/gossip/internal/tui"
 )
+
+type messageTemplates struct {
+	ready   string
+	waiting string
+}
 
 type stopTimer interface {
 	Stop() bool
@@ -76,6 +82,7 @@ type Daemon struct {
 	runCancel                context.CancelFunc
 	replyRequired            bool
 	replyReceivedDuringTurn  bool
+	messageTemplates         messageTemplates
 	bridgeReadyAt            atomic.Int64
 }
 
@@ -100,6 +107,10 @@ func New(opts Options) *Daemon {
 		opts.IdleShutdown = 30 * time.Second
 	}
 	d := &Daemon{opts: opts, filter: opts.FilterMode, afterFunc: defaultAfterFunc}
+	d.messageTemplates = messageTemplates{
+		ready:   "✅ Codex bridge ready (thread {thread_id})",
+		waiting: fmt.Sprintf("⏳ Waiting for Codex TUI to connect. Run in another terminal:\ncodex --enable tui_app_server --remote ws://127.0.0.1:%d", opts.ProxyPort),
+	}
 	d.tuiState = tui.NewState(tui.Options{
 		DisconnectGrace: 2500 * time.Millisecond,
 		Logger:          opts.Logger,
@@ -118,6 +129,41 @@ func New(opts Options) *Daemon {
 		},
 	})
 	return d
+}
+
+// SetReadyMessageTemplate overrides the ready notification template.
+func (d *Daemon) SetReadyMessageTemplate(template string) {
+	d.stateMu.Lock()
+	defer d.stateMu.Unlock()
+	d.messageTemplates.ready = template
+}
+
+// SetWaitingMessageTemplate overrides the waiting notification template.
+func (d *Daemon) SetWaitingMessageTemplate(template string) {
+	d.stateMu.Lock()
+	defer d.stateMu.Unlock()
+	d.messageTemplates.waiting = template
+}
+
+func (d *Daemon) currentReadyMessage(threadID string) string {
+	d.stateMu.Lock()
+	template := d.messageTemplates.ready
+	d.stateMu.Unlock()
+	return strings.ReplaceAll(template, "{thread_id}", threadID)
+}
+
+func (d *Daemon) currentWaitingMessage() string {
+	d.stateMu.Lock()
+	template := d.messageTemplates.waiting
+	d.stateMu.Unlock()
+	return strings.ReplaceAll(template, "{thread_id}", d.threadID())
+}
+
+func (d *Daemon) threadID() string {
+	if d.codex == nil {
+		return ""
+	}
+	return d.codex.ActiveThreadID()
 }
 
 // Run blocks until ctx is cancelled, running all layers under an errgroup.
@@ -225,7 +271,7 @@ func (d *Daemon) handleCodexEvent(ctx context.Context, ev codex.Event) {
 	case codex.EventThreadReady:
 		d.tuiState.MarkBridgeReady()
 		d.bridgeReadyAt.Store(time.Now().UnixMilli())
-		d.broadcastSystem(ctx, "system_ready", "✅ Codex bridge ready (thread "+ev.ThreadID+")")
+		d.broadcastSystem(ctx, "system_ready", d.currentReadyMessage(ev.ThreadID))
 	case codex.EventTurnStarted:
 		d.broadcastSystem(ctx, "system_turn_started", "⏳ Codex is working on the current task.")
 	case codex.EventTurnCompleted:
@@ -466,10 +512,7 @@ func (d *Daemon) Snapshot() control.Status {
 	if d.proxy != nil {
 		tuiConnected = d.proxy.ConnectionCount() > 0
 	}
-	threadID := ""
-	if d.codex != nil {
-		threadID = d.codex.ActiveThreadID()
-	}
+	threadID := d.threadID()
 	queued := 0
 	if d.statusBuf != nil {
 		queued += d.statusBuf.Size()
