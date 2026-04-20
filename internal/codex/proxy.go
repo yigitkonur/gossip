@@ -340,6 +340,7 @@ func (p *Proxy) HandleUpstreamMessage(ctx context.Context, payload []byte) {
 			return
 		}
 		payload, env = p.patchInitializeAlreadyError(id, payload, env)
+		payload, env = p.patchThreadStartAlreadyError(id, payload, env)
 		payload, env = p.patchRateLimitsError(payload, env)
 		p.completePendingClientRequest(id, env)
 		conn, orig, found := p.ids.Resolve(id)
@@ -406,6 +407,52 @@ func (p *Proxy) patchInitializeAlreadyError(proxyID int64, payload []byte, env p
 		return payload, env
 	}
 	p.debugLog("patching initialize Already-initialized error with cached success")
+	return patched, patchedEnv
+}
+
+// patchThreadStartAlreadyError rewrites the upstream app-server's "thread already
+// started" (or equivalent) error for a TUI-initiated thread/start into a success
+// response. gossip's primary TUI piggybacks on the daemon's shared upstream WS
+// which already has a thread running, so a fresh TUI sees an error on bootstrap
+// and aborts. We replay the cached thread/start result the daemon received, so
+// the TUI adopts the same thread the daemon orchestrates via InjectMessage.
+func (p *Proxy) patchThreadStartAlreadyError(proxyID int64, payload []byte, env protocol.Envelope) ([]byte, protocol.Envelope) {
+	if env.Error == nil || len(env.ID) == 0 {
+		return payload, env
+	}
+	p.mu.Lock()
+	pending, ok := p.pendingClient[proxyID]
+	p.mu.Unlock()
+	if !ok || pending.method != protocol.MethodThreadStart {
+		return payload, env
+	}
+	if p.upstream == nil {
+		return payload, env
+	}
+	cached := p.upstream.ThreadStartResult()
+	if len(cached) == 0 {
+		return payload, env
+	}
+	var rawID any
+	if err := json.Unmarshal(env.ID, &rawID); err != nil {
+		return payload, env
+	}
+	var resultAny any
+	if err := json.Unmarshal(cached, &resultAny); err != nil {
+		return payload, env
+	}
+	patched, err := json.Marshal(map[string]any{
+		"id":     rawID,
+		"result": resultAny,
+	})
+	if err != nil {
+		return payload, env
+	}
+	var patchedEnv protocol.Envelope
+	if err := json.Unmarshal(patched, &patchedEnv); err != nil {
+		return payload, env
+	}
+	p.debugLog("patching thread/start error with cached success")
 	return patched, patchedEnv
 }
 
