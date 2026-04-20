@@ -5,6 +5,7 @@ import (
 	"os"
 	"os/signal"
 	"strconv"
+	"strings"
 	"syscall"
 	"time"
 
@@ -42,6 +43,32 @@ func attentionWindowFromConfig(cfg config.Config) time.Duration {
 	return 15 * time.Second
 }
 
+func daemonFilterMode(logger func(string)) filter.Mode {
+	for _, key := range []string{"GOSSIP_FILTER_MODE", "AGENTBRIDGE_FILTER_MODE"} {
+		if mode, ok := parseFilterMode(os.Getenv(key)); ok {
+			if logger != nil {
+				logger("Filter mode: " + string(mode))
+			}
+			return mode
+		}
+	}
+	if logger != nil {
+		logger("Filter mode: " + string(filter.ModeFiltered))
+	}
+	return filter.ModeFiltered
+}
+
+func parseFilterMode(raw string) (filter.Mode, bool) {
+	switch strings.ToLower(strings.TrimSpace(raw)) {
+	case string(filter.ModeFiltered):
+		return filter.ModeFiltered, true
+	case string(filter.ModeFull), "passthrough":
+		return filter.ModeFull, true
+	default:
+		return "", false
+	}
+}
+
 type stateDirEnsurer interface{ Ensure() error }
 
 type pidFileWriter interface{ WritePid() error }
@@ -72,7 +99,9 @@ func newDaemonCmd() *cobra.Command {
 
 			ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 			defer stop()
-			d := daemon.New(daemonOptionsFromConfig(sd, cfg))
+			opts := daemonOptionsFromConfig(sd, cfg)
+			opts.FilterMode = daemonFilterMode(logToStderr)
+			d := daemon.New(opts)
 			return d.Run(ctx)
 		},
 	}
