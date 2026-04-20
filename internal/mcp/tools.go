@@ -82,7 +82,7 @@ func (s *Server) handleReplyTool(ctx context.Context, reqID json.RawMessage, arg
 	}
 	response := "Reply sent to Codex."
 	if pending := s.pendingCount(); pending > 0 {
-		response += fmt.Sprintf(" Note: %d unread Codex message(s) waiting — call get_messages.", pending)
+		response += fmt.Sprintf(" Note: %d unread Codex message(s) already waiting — call get_messages to read them.", pending)
 	}
 	s.respond(reqID, ToolCallResult{Content: []ToolContent{{Type: "text", Text: response}}})
 }
