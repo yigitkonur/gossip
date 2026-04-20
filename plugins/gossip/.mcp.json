@@ -1,0 +1,9 @@
+{
+  "mcpServers": {
+    "gossip": {
+      "command": "gossip",
+      "args": ["claude"],
+      "env": {}
+    }
+  }
+}

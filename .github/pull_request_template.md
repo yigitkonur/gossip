@@ -12,8 +12,10 @@ Why is this change needed?
 
 ## Testing
 
-- [ ] `bun run typecheck` passes
-- [ ] `bun test src` passes
+- [ ] `go test ./...` passes
+- [ ] `go vet ./...` passes
+- [ ] `go build ./...` passes
+- [ ] `make check` passes
 - [ ] Manually tested with Claude Code + Codex (if applicable)
 
 ## Checklist

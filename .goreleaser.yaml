@@ -1,0 +1,38 @@
+version: 2
+
+project_name: gossip
+
+before:
+  hooks:
+    - go mod tidy
+    - go vet ./...
+
+builds:
+  - id: gossip
+    main: ./cmd/gossip
+    binary: gossip
+    env:
+      - CGO_ENABLED=0
+    goos:
+      - darwin
+      - linux
+    goarch:
+      - amd64
+      - arm64
+    ldflags:
+      - -s -w
+      - -X main.version={{ .Version }}
+
+archives:
+  - id: default
+    formats: [tar.gz]
+    name_template: "gossip_{{ .Version }}_{{ .Os }}_{{ .Arch }}"
+    files:
+      - LICENSE
+      - README.md
+
+checksum:
+  name_template: 'checksums.txt'
+
+release:
+  draft: false

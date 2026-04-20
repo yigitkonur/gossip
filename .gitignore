@@ -1,11 +1,36 @@
-node_modules/
+# Go
+bin/
 dist/
+*.test
+*.out
+coverage.txt
+vendor/
+
+# Editor
+.idea/
+.vscode/
+*.swp
+
+# OS
+.DS_Store
+
+# Gossip runtime (should never be committed)
+.gossip/
+ts-legacy/node_modules/
+
+# Existing local/dev artifacts
+node_modules/
 coverage/
 *.log
-.DS_Store
 .claude/
-codex/
+/codex/
 agent_collab/
 /.mcp.json
-agentbridge-context.md
+gossip-context.md
 V1_PROGRESS.md
+
+# Local cleanup scratch
+to-delete/
+*.claude-session*
+.continues-handoff.md
+derailment-notes/

@@ -1,71 +1,64 @@
 # Contributing
 
-Thanks for contributing to AgentBridge.
+Thanks for contributing to Gossip.
 
 ## Prerequisites
 
-- [Bun](https://bun.sh) v1.0+
-- [Claude Code](https://docs.anthropic.com/en/docs/claude-code) v2.1.80+
+- Go 1.23+
+- [Claude Code](https://docs.anthropic.com/en/docs/claude-code)
 - [Codex CLI](https://github.com/openai/codex)
 
 ## Setup
 
 ```bash
-bun install
-bun link    # Makes the 'agentbridge' command available globally
+go mod tidy
+go build ./cmd/gossip
 ```
 
-### For local development
-
-Use the `dev` command to register a local plugin marketplace and sync plugin files to the Claude Code cache:
+If you want the CLI on your PATH during local development:
 
 ```bash
-agentbridge dev     # Register local marketplace + sync plugin
-agentbridge claude  # Start Claude Code with plugin auto-loaded
+go install ./cmd/gossip
 ```
-
-After changing plugin or runtime code, run `agentbridge dev` again and restart Claude Code (or `/reload-plugins` in an active session).
 
 ## Development Workflow
 
-1. Create a focused branch for one change (`feat/xxx`, `fix/xxx`, `docs/xxx`).
+1. Create a focused branch for one change.
 2. Make the smallest coherent change that solves the problem.
-3. Update documentation when behavior, setup, or limitations change.
+3. Update documentation when setup, behavior, or limitations change.
 4. Run validation locally before opening a pull request.
-5. All PRs target `master` and use squash merge.
+5. Use squash merge when landing the PR.
 
 ## Validation
 
 Run these commands before submitting a PR:
 
 ```bash
-bun run typecheck    # TypeScript type checking
-bun test src/        # Unit + E2E tests
+go test ./...
+go vet ./...
+go build ./...
+make check
 ```
 
-Both must pass. If your change affects the local bridge flow, add manual reproduction steps in the PR description.
+If your change affects the local Claude/Codex flow, include manual reproduction steps in the PR description.
 
 ## Testing
 
-- **Unit tests**: Co-located with source files (`*.test.ts`)
-- **E2E tests**: `src/e2e-cli.test.ts` (CLI surface), `src/e2e-reconnect.test.ts` (daemon reconnect)
-- E2E tests use isolated harnesses with temporary directories, reserved ports, and shim binaries
-- All tests run with `bun test src/`
+- Unit and integration tests live beside the Go packages they verify.
+- Use `t.TempDir()` for temporary filesystem state.
+- Prefer focused tests first, then run the full repository checks.
 
 ## Pull Requests
 
-- Keep PRs small and scoped to one problem.
-- Never push directly to `master` -- always use feature/fix branches + PR.
-- Explain the user-visible change and the reason for it.
-- Include validation results from `bun run typecheck` and `bun test src/`.
-- Link related issues when applicable.
+- Keep PRs scoped to one problem.
+- Never push directly to `master`.
+- Explain the user-visible change and why it matters.
+- Include the validation commands you ran.
 - Update `README.md` and `README.zh-CN.md` together when setup or usage changes.
 
 ## Code Style
 
-- Use TypeScript with strict typing.
-- Prefer small, explicit functions over broad refactors.
-- Preserve the current architecture unless the PR is intentionally structural.
+- Keep command handlers thin.
+- Keep package boundaries explicit.
+- Prefer small, readable functions over broad refactors.
 - Avoid committing local machine config, secrets, logs, or generated noise.
-- Keep comments short and only where they add real context.
-- Use `execFileSync` (array form) instead of `execSync` (string form) to avoid shell injection.

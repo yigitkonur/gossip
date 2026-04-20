@@ -1,8 +1,8 @@
-# AgentBridge v1 Roadmap
+# Gossip v1 Roadmap
 
 ## 1. Current v1.0 State
 
-AgentBridge v1.0 already provides a working local bridge between Claude Code and Codex in the same workspace.
+Gossip v1.0 already provides a working local bridge between Claude Code and Codex in the same workspace.
 
 Current capabilities:
 
@@ -302,7 +302,7 @@ Phase 3 shipped the v1 distribution milestone as a local CLI-first workflow.
 
 The product shape that actually landed is:
 
-- a repository-local `agentbridge` CLI exposed through the package `bin`
+- a repository-local `gossip` CLI exposed through the package `bin`
 - a plugin-oriented Claude integration path
 - a persistent daemon reused across Claude restarts
 - project config generation plus machine-local runtime state management
@@ -311,24 +311,23 @@ The product shape that actually landed is:
 
 The current command set is:
 
-- `agentbridge init`
-- `agentbridge dev`
-- `agentbridge claude`
-- `agentbridge codex`
-- `agentbridge kill`
+- `gossip init`
+- `gossip claude`
+- `gossip codex`
+- `gossip kill`
 
 What those commands do in practice:
 
 - `init`
   - checks `bun`, `claude`, and `codex`
   - enforces the minimum Claude version
-  - creates `.agentbridge/config.json`
-  - creates `.agentbridge/collaboration.md`
+  - creates `.gossip/config.json`
+  - creates `.gossip/collaboration.md`
   - attempts plugin installation as a best-effort step
 - `dev`
   - developer-only local marketplace and plugin-cache workflow
 - `claude`
-  - launches Claude with `--dangerously-load-development-channels plugin:agentbridge@agentbridge`
+  - launches Claude with `--dangerously-load-development-channels plugin:gossip@gossip`
 - `codex`
   - ensures the daemon is running
   - launches Codex with the injected proxy arguments
@@ -339,11 +338,11 @@ What those commands do in practice:
 
 The real first-run flow in the current codebase is:
 
-1. Clone the repository and run `bun install`
-2. Run `agentbridge init`
-3. Start Claude Code with `agentbridge claude`
-4. Start Codex with `agentbridge codex`
-5. Stop the daemon later with `agentbridge kill`
+1. Clone the repository and build the CLI with `go build ./cmd/gossip`
+2. Run `gossip init`
+3. Start Claude Code with `gossip claude`
+4. Start Codex with `gossip codex`
+5. Stop the daemon later with `gossip kill`
 
 This is simpler and more opinionated than the original proposal. Instead of generic `start` and `attach` commands, the CLI now encodes the actual Claude-side and Codex-side entrypoints directly.
 
@@ -351,11 +350,11 @@ This is simpler and more opinionated than the original proposal. Instead of gene
 
 The original recommended command set included:
 
-- `agentbridge doctor`
-- `agentbridge start`
-- `agentbridge stop`
-- `agentbridge status`
-- `agentbridge attach`
+- `gossip doctor`
+- `gossip start`
+- `gossip stop`
+- `gossip status`
+- `gossip attach`
 
 Those commands did not ship in Phase 3.
 
@@ -367,8 +366,7 @@ The implemented CLI chose task-specific commands instead because they map more d
 
 ### Important deviations from the original distribution plan
 
-- The CLI exists, but the package is not yet published as a public npm artifact.
-  - The package is still marked `private`.
+- The CLI exists, but packaging and distribution still need polish.
 - `init` does not patch a global Claude MCP config file.
   - It generates project config and attempts plugin installation instead.
 - Claude startup still depends on the development-channel flag rather than a stable marketplace `--channels` flow.
@@ -383,13 +381,13 @@ Phase 3 solved the operational problems that mattered most for v1:
 - project-level collaboration defaults
 - a clean place to centralize runtime lifecycle logic
 
-That gives AgentBridge a real product surface now, even though public packaging and marketplace polish remain follow-up work.
+That gives Gossip a real product surface now, even though public packaging and marketplace polish remain follow-up work.
 
 ## 7. Collaboration Awareness Injection
 
 ### Problem
 
-By default, each agent behaves as if it is working alone. Even if AgentBridge is connected, the participant may not clearly know that another agent is actively collaborating in the same workflow, or how that collaboration is supposed to work.
+By default, each agent behaves as if it is working alone. Even if Gossip is connected, the participant may not clearly know that another agent is actively collaborating in the same workflow, or how that collaboration is supposed to work.
 
 ### Proposed improvement
 
@@ -433,7 +431,7 @@ The bridge itself should establish that shared awareness automatically when the 
 
 ### Problem
 
-The current bridge relies entirely on Claude Code's experimental Channel capability (`notifications/claude/channel`) for delivering Codex messages to Claude in real time. This requires the user to start Claude Code with `--dangerously-load-development-channels`, which in turn mandates OAuth authentication. Users who authenticate with an API key cannot use AgentBridge at all.
+The current bridge relies entirely on Claude Code's experimental Channel capability (`notifications/claude/channel`) for delivering Codex messages to Claude in real time. This requires the user to start Claude Code with `--dangerously-load-development-channels`, which in turn mandates OAuth authentication. Users who authenticate with an API key cannot use Gossip at all.
 
 This is a hard adoption blocker. API key users are a significant portion of the Claude Code user base, and requiring OAuth just to use a local development tool is an unnecessary barrier.
 
@@ -466,7 +464,7 @@ If client capability inspection is not reliable, a fallback detection approach i
 
 - Always register the `get_messages` tool so it works in both modes.
 - Also attempt to send channel notifications.
-- Support an environment variable (`AGENTBRIDGE_MODE=push|pull|auto`) as an explicit override for users who know which mode they need.
+- Support an environment variable (`GOSSIP_MODE=push|pull|auto`) as an explicit override for users who know which mode they need.
 
 ### Pull mode design
 
@@ -475,7 +473,7 @@ If client capability inspection is not reliable, a fallback detection approach i
 - The bridge maintains an in-memory message queue for pending Codex messages.
 - Messages are appended to the queue as they arrive from the daemon.
 - When Claude calls `get_messages`, all queued messages are returned and the queue is cleared.
-- Queue size is bounded by `AGENTBRIDGE_MAX_BUFFERED_MESSAGES` (existing config, default 100).
+- Queue size is bounded by `GOSSIP_MAX_BUFFERED_MESSAGES` (existing config, default 100).
 
 #### `get_messages` tool
 
@@ -548,12 +546,12 @@ The only difference is the delivery direction: push (server → client notificat
 - `claude-adapter.ts`: Add mode detection logic. Add `get_messages` tool registration. Add message queue for pull mode. Add pending message hints in `reply` responses.
 - `bridge.ts`: Adjust the `codexMessage` handler to either push or queue based on detected mode.
 - `types.ts`: No changes needed — `BridgeMessage` is shared.
-- Add `AGENTBRIDGE_MODE` environment variable support (`auto` | `push` | `pull`, default `auto`).
+- Add `GOSSIP_MODE` environment variable support (`auto` | `push` | `pull`, default `auto`).
 - Update MCP instructions to cover both modes.
 
 ### Expected user impact
 
-- API key users can use AgentBridge for the first time without any special flags.
+- API key users can use Gossip for the first time without any special flags.
 - OAuth users retain full real-time push behavior with no changes.
 - The bridge startup command simplifies to just `claude` for API key users.
 - The `get_messages` tool provides a clear, explicit interface for message retrieval.
