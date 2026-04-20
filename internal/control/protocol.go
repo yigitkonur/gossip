@@ -2,7 +2,10 @@
 // (foreground MCP server) and daemon (background Codex proxy host).
 package control
 
-import "github.com/yigitkonur/gossip/internal/protocol"
+import (
+	"github.com/coder/websocket"
+	"github.com/yigitkonur/gossip/internal/protocol"
+)
 
 // ClientMessage is a bridge-to-daemon message.
 type ClientMessage struct {
@@ -34,6 +37,8 @@ const (
 	ServerMsgClaudeToCodexResult = "claude_to_codex_result"
 	ServerMsgStatus              = "status"
 )
+
+const CloseCodeReplaced websocket.StatusCode = 4001
 
 // Status is a daemon snapshot.
 type Status struct {

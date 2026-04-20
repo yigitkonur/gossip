@@ -142,14 +142,15 @@ func (s *Server) handleWebSocket(w http.ResponseWriter, r *http.Request) {
 func (s *Server) handleClientMessage(ctx context.Context, c *controlConn, msg ClientMessage) {
 	switch msg.Type {
 	case ClientMsgClaudeConnect:
-		var previous *controlConn
 		s.mu.Lock()
-		previous = s.attached
+		attached := s.attached
+		if attached != nil && attached != c {
+			s.mu.Unlock()
+			_ = c.conn.Close(CloseCodeReplaced, "another Claude session is already connected")
+			return
+		}
 		s.attached = c
 		s.mu.Unlock()
-		if previous != nil && previous != c {
-			_ = previous.conn.Close(websocket.StatusPolicyViolation, "replaced by a newer Claude session")
-		}
 		s.handler.OnClaudeConnect()
 		status := s.handler.Snapshot()
 		_ = c.write(ctx, ServerMessage{Type: ServerMsgStatus, Status: &status})

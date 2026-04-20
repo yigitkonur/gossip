@@ -77,7 +77,7 @@ func TestServer_BuffersBroadcastUntilAttach(t *testing.T) {
 	}
 }
 
-func TestServer_OlderAttachedBridgeCannotSendAfterReplacement(t *testing.T) {
+func TestServer_RejectsLateDuplicateWithCloseCode4001(t *testing.T) {
 	h := &testHandler{status: Status{BridgeReady: true}}
 	s := NewServer(h)
 	srv := httptest.NewServer(s.HTTPHandler())
@@ -100,26 +100,38 @@ func TestServer_OlderAttachedBridgeCannotSendAfterReplacement(t *testing.T) {
 	if err := conn1.Write(ctx, websocket.MessageText, []byte(`{"type":"claude_connect"}`)); err != nil {
 		t.Fatalf("attach1: %v", err)
 	}
+	waitForControlMessage(t, conn1)
+
 	if err := conn2.Write(ctx, websocket.MessageText, []byte(`{"type":"claude_connect"}`)); err != nil {
 		t.Fatalf("attach2: %v", err)
 	}
 
-	closeCtx, closeCancel := context.WithTimeout(context.Background(), 2*time.Second)
-	defer closeCancel()
+	readCtx, cancelRead := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancelRead()
 	for {
-		_, _, err := conn1.Read(closeCtx)
-		if err != nil {
-			break
+		_, _, err := conn2.Read(readCtx)
+		if err == nil {
+			continue
 		}
+		closeErr := websocket.CloseStatus(err)
+		if closeErr != CloseCodeReplaced {
+			t.Fatalf("duplicate close code = %v, want %v (err=%v)", closeErr, CloseCodeReplaced, err)
+		}
+		break
 	}
 
-	_ = conn1.Write(ctx, websocket.MessageText, []byte(`{"type":"claude_to_codex","requestId":"r1","message":{"id":"x","source":"claude","content":"old","timestamp":1}}`))
+	if err := conn1.Write(ctx, websocket.MessageText, []byte(`{"type":"claude_to_codex","requestId":"r1","message":{"id":"x","source":"claude","content":"still attached","timestamp":1}}`)); err != nil {
+		t.Fatalf("active client write failed: %v", err)
+	}
 
 	time.Sleep(200 * time.Millisecond)
 	h.mu.Lock()
 	defer h.mu.Unlock()
-	if len(h.replies) != 0 {
-		t.Fatalf("stale attached bridge unexpectedly reached handler: %+v", h.replies)
+	if len(h.replies) != 1 || h.replies[0].Content != "still attached" {
+		t.Fatalf("active client should remain attached, replies=%+v", h.replies)
+	}
+	if h.connects != 1 {
+		t.Fatalf("connect count = %d, want 1", h.connects)
 	}
 }
 
@@ -136,5 +148,22 @@ func TestServer_HandleReady_SetsContentTypeOn503(t *testing.T) {
 	}
 	if got := rec.Header().Get("Content-Type"); got != "application/json" {
 		t.Fatalf("Content-Type = %q, want application/json", got)
+	}
+}
+
+func waitForControlMessage(t *testing.T, conn *websocket.Conn) ServerMessage {
+	t.Helper()
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	for {
+		_, payload, err := conn.Read(ctx)
+		if err != nil {
+			t.Fatalf("read control message: %v", err)
+		}
+		var msg ServerMessage
+		if err := json.Unmarshal(payload, &msg); err != nil {
+			continue
+		}
+		return msg
 	}
 }

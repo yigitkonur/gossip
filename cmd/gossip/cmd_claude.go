@@ -50,12 +50,23 @@ func newClaudeCmd() *cobra.Command {
 			var bridgeDisabled atomic.Bool
 			var reconnectRunning atomic.Bool
 			var currentChatID atomic.Value
+			var currentDisabledReason atomic.Value
 			currentChatID.Store("")
+			currentDisabledReason.Store(bridgeDisabledReasonNone)
+			currentDisabled := func() bridgeDisabledReason {
+				reason, _ := currentDisabledReason.Load().(bridgeDisabledReason)
+				return reason
+			}
 			pushSystem := func(id, content string) {
 				if srv == nil {
 					return
 				}
 				srv.PushMessage(protocol.BridgeMessage{ID: fmt.Sprintf("%s_%d", id, time.Now().UnixMilli()), Source: protocol.SourceCodex, Content: content, Timestamp: time.Now().UnixMilli()})
+			}
+			enterDisabledState := func(reason bridgeDisabledReason, id, content string) {
+				bridgeDisabled.Store(true)
+				currentDisabledReason.Store(reason)
+				pushSystem(id, content)
 			}
 
 			var cc *control.Client
@@ -71,9 +82,11 @@ func newClaudeCmd() *cobra.Command {
 				},
 				OnDisconnect: func(_ int, _ string, _ time.Duration) {
 					if lc.WasKilled() {
-						bridgeDisabled.Store(true)
-						pushSystem("system_bridge_disabled", "⛔ Gossip was stopped by gossip kill. Bridge is staying idle until you restart with gossip codex.")
+						enterDisabledState(bridgeDisabledReasonKilled, "system_bridge_disabled", "⛔ Gossip was stopped by `gossip kill`. Bridge is staying idle. Restart Claude Code (`gossip claude`), switch to a new conversation, or run /resume to reconnect.")
 					}
+				},
+				OnRejected: func(_ int, _ string, _ time.Duration) {
+					enterDisabledState(bridgeDisabledReasonRejected, "system_bridge_replaced", "⚠️ Gossip daemon rejected this session — another Claude Code session is already connected. Close the other session first, or run `gossip kill` to reset.")
 				},
 				ShouldReconnect: func() bool { return !bridgeDisabled.Load() && !lc.WasKilled() },
 				Logger:          logToStderr,
@@ -90,7 +103,7 @@ func newClaudeCmd() *cobra.Command {
 				DeliveryMode: resolveClaudeDeliveryMode(cfg, logToStderr),
 				ReplyHandler: func(ctx context.Context, msg protocol.BridgeMessage, requireReply bool) mcp.ReplyResult {
 					if bridgeDisabled.Load() {
-						return mcp.ReplyResult{Success: false, Error: "Gossip is disabled by gossip kill. Restart with gossip codex to reconnect."}
+						return mcp.ReplyResult{Success: false, Error: disabledReplyError(currentDisabled())}
 					}
 					ok, errMsg := cc.SendReply(ctx, msg, requireReply)
 					return mcp.ReplyResult{Success: ok, Error: errMsg}
@@ -121,7 +134,8 @@ func newClaudeCmd() *cobra.Command {
 								continue
 							}
 							bridgeDisabled.Store(false)
-							pushSystem("system_bridge_recovered", "✅ Gossip daemon reconnected after the killed sentinel was cleared.")
+							currentDisabledReason.Store(bridgeDisabledReasonNone)
+							pushSystem("system_bridge_recovered", "✅ Gossip daemon reconnected after the disabled state cleared.")
 							startReconnect()
 						}
 					}
@@ -130,10 +144,11 @@ func newClaudeCmd() *cobra.Command {
 
 			if lc.WasKilled() {
 				bridgeDisabled.Store(true)
+				currentDisabledReason.Store(bridgeDisabledReasonKilled)
 				go func() {
 					<-srv.Ready()
 					startRecoveryPoller()
-					pushSystem("system_bridge_disabled", "⛔ Gossip was stopped by gossip kill. Bridge is staying idle until you restart with gossip codex.")
+					pushSystem("system_bridge_disabled", "⛔ Gossip was stopped by `gossip kill`. Bridge is staying idle. Restart Claude Code (`gossip claude`), switch to a new conversation, or run /resume to reconnect.")
 				}()
 				return srv.Serve(ctx, os.Stdin, os.Stdout)
 			}

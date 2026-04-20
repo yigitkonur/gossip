@@ -19,6 +19,7 @@ type ClientOptions struct {
 	OnCodexMsg      func(msg protocol.BridgeMessage)
 	OnStatus        func(status Status)
 	OnDisconnect    func(code int, reason string, uptime time.Duration)
+	OnRejected      func(code int, reason string, uptime time.Duration)
 	Logger          func(msg string)
 	MaxBackoff      time.Duration
 	ShouldReconnect func() bool
@@ -157,6 +158,9 @@ func (c *Client) waitClosed(ctx context.Context) {
 }
 
 func (c *Client) readLoop(ctx context.Context, conn *websocket.Conn) {
+	closeCode := 0
+	closeReason := "read loop exit"
+	rejected := false
 	defer func() {
 		c.mu.Lock()
 		openedAt := c.openedAt
@@ -164,13 +168,27 @@ func (c *Client) readLoop(ctx context.Context, conn *websocket.Conn) {
 			c.conn = nil
 		}
 		c.mu.Unlock()
+		if rejected {
+			c.rejectPendingReplies("Gossip daemon rejected this session.")
+			if c.opts.OnRejected != nil {
+				c.opts.OnRejected(closeCode, closeReason, time.Since(openedAt))
+			}
+			return
+		}
+		c.rejectPendingReplies("Daemon connection closed")
 		if c.opts.OnDisconnect != nil {
-			c.opts.OnDisconnect(0, "read loop exit", time.Since(openedAt))
+			c.opts.OnDisconnect(closeCode, closeReason, time.Since(openedAt))
 		}
 	}()
 	for {
 		_, payload, err := conn.Read(ctx)
 		if err != nil {
+			var closeErr websocket.CloseError
+			if errors.As(err, &closeErr) {
+				closeCode = int(closeErr.Code)
+				closeReason = closeErr.Reason
+				rejected = closeErr.Code == CloseCodeReplaced
+			}
 			return
 		}
 		var msg ServerMessage
@@ -223,4 +241,16 @@ func minInt(a, b int) int {
 		return a
 	}
 	return b
+}
+
+func (c *Client) rejectPendingReplies(error string) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	for requestID, pending := range c.pending {
+		select {
+		case pending <- ServerMessage{Type: ServerMsgClaudeToCodexResult, RequestID: requestID, Success: false, Error: error}:
+		default:
+		}
+		delete(c.pending, requestID)
+	}
 }
