@@ -21,7 +21,10 @@ import (
 	"github.com/yigitkonur/gossip/internal/tui"
 )
 
-const attachStatusCooldown = 30 * time.Second
+const (
+	attachStatusCooldown = 30 * time.Second
+	codexStopTimeout     = 3 * time.Second
+)
 
 type messageTemplates struct {
 	ready   string
@@ -259,7 +262,9 @@ func (d *Daemon) Run(ctx context.Context) error {
 	err := g.Wait()
 	d.clearAttentionWindow("daemon stopped")
 	d.cancelIdleShutdown()
-	_ = d.codex.Stop(context.Background())
+	stopCtx, stopCancel := context.WithTimeout(context.Background(), codexStopTimeout)
+	defer stopCancel()
+	_ = d.codex.Stop(stopCtx)
 	return err
 }
 

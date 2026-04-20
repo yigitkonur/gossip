@@ -114,6 +114,38 @@ func TestProcess_CleanupPortSkipsWhenLsofUnavailable(t *testing.T) {
 	}
 }
 
+func TestProcess_StopFallsBackToSigKillAfterGracePeriod(t *testing.T) {
+	if _, err := exec.LookPath("sh"); err != nil {
+		t.Skipf("sh not available: %v", err)
+	}
+
+	cmd := exec.Command("sh", "-c", `trap '' TERM; while :; do sleep 1; done`)
+	if err := cmd.Start(); err != nil {
+		t.Fatalf("start stubborn process: %v", err)
+	}
+	done := make(chan struct{})
+	go func() {
+		_ = cmd.Wait()
+		close(done)
+	}()
+	defer func() {
+		_ = cmd.Process.Kill()
+		<-done
+	}()
+
+	p := &Process{cmd: cmd, done: done}
+	ctx, cancel := context.WithTimeout(context.Background(), stopKillGracePeriod+3*time.Second)
+	defer cancel()
+
+	started := time.Now()
+	if err := p.Stop(ctx); err != nil {
+		t.Fatalf("Stop() error = %v", err)
+	}
+	if elapsed := time.Since(started); elapsed > stopKillGracePeriod+2*time.Second {
+		t.Fatalf("Stop() took %s, want SIGKILL fallback before timeout window", elapsed)
+	}
+}
+
 func overrideProcessRun(t *testing.T, runFn func(context.Context, string, ...string) (string, error)) func() {
 	t.Helper()
 	prevRun := processRun

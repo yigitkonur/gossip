@@ -17,6 +17,8 @@ import (
 	"time"
 )
 
+const stopKillGracePeriod = 2 * time.Second
+
 var (
 	processLookPath = exec.LookPath
 	processCommand  = exec.CommandContext
@@ -121,12 +123,18 @@ func (p *Process) Stop(ctx context.Context) error {
 		return nil
 	}
 	_ = cmd.Process.Signal(syscall.SIGTERM)
-	select {
-	case <-done:
-		return nil
-	case <-ctx.Done():
-		_ = cmd.Process.Kill()
-		return ctx.Err()
+	killTimer := time.NewTimer(stopKillGracePeriod)
+	defer killTimer.Stop()
+	for {
+		select {
+		case <-done:
+			return nil
+		case <-killTimer.C:
+			_ = cmd.Process.Kill()
+		case <-ctx.Done():
+			_ = cmd.Process.Kill()
+			return ctx.Err()
+		}
 	}
 }
 
