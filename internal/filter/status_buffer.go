@@ -20,10 +20,12 @@ type StatusBuffer struct {
 	flushThreshold int
 	flushTimeout   time.Duration
 
-	mu     sync.Mutex
-	queue  []protocol.BridgeMessage
-	timer  *time.Timer
-	paused bool
+	mu                 sync.Mutex
+	queue              []protocol.BridgeMessage
+	timer              *time.Timer
+	timerDeadline      time.Time
+	paused             bool
+	pendingFlushReason string
 }
 
 // NewStatusBuffer returns a new StatusBuffer.
@@ -50,6 +52,9 @@ func (b *StatusBuffer) Add(msg protocol.BridgeMessage) {
 	b.queue = append(b.queue, msg)
 	size := len(b.queue)
 	paused := b.paused
+	if paused && size >= b.flushThreshold {
+		b.pendingFlushReason = "threshold reached after resume"
+	}
 	b.mu.Unlock()
 	if !paused {
 		b.resetTimer()
@@ -75,12 +80,22 @@ func (b *StatusBuffer) Resume() {
 	b.mu.Lock()
 	b.paused = false
 	size := len(b.queue)
-	b.mu.Unlock()
-	if size >= b.flushThreshold {
-		b.Flush("threshold reached after resume")
-	} else if size > 0 {
-		b.resetTimer()
+	reason := b.pendingFlushReason
+	if reason == "" && !b.timerDeadline.IsZero() && time.Now().After(b.timerDeadline) {
+		reason = "timeout after resume"
 	}
+	if reason != "" {
+		b.pendingFlushReason = ""
+	}
+	b.mu.Unlock()
+	if size == 0 {
+		return
+	}
+	if reason != "" {
+		b.Flush(reason)
+		return
+	}
+	b.resetTimer()
 }
 
 // Flush combines the buffered messages into a single summary and calls onFlush.
@@ -92,6 +107,8 @@ func (b *StatusBuffer) Flush(reason string) {
 	}
 	msgs := b.queue
 	b.queue = nil
+	b.pendingFlushReason = ""
+	b.timerDeadline = time.Time{}
 	if b.timer != nil {
 		b.timer.Stop()
 		b.timer = nil
@@ -118,6 +135,7 @@ func (b *StatusBuffer) Flush(reason string) {
 func (b *StatusBuffer) resetTimer() {
 	b.mu.Lock()
 	defer b.mu.Unlock()
+	b.timerDeadline = time.Now().Add(b.flushTimeout)
 	if b.timer != nil {
 		b.timer.Stop()
 	}

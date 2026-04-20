@@ -45,3 +45,30 @@ func TestStatusBuffer_FlushesOnThreshold(t *testing.T) {
 		t.Errorf("queue should be empty after flush")
 	}
 }
+
+func TestStatusBuffer_ResumeFlushesThresholdReachedWhilePaused(t *testing.T) {
+	flushed := make(chan protocol.BridgeMessage, 1)
+	b := NewStatusBuffer(func(m protocol.BridgeMessage) { flushed <- m }, StatusBufferOptions{FlushThreshold: 3, FlushTimeout: time.Hour})
+
+	b.Pause()
+	for i := 0; i < 3; i++ {
+		b.Add(protocol.BridgeMessage{Content: "[STATUS] tick", Source: protocol.SourceCodex})
+	}
+
+	select {
+	case msg := <-flushed:
+		t.Fatalf("flush should stay paused, got %q", msg.Content)
+	default:
+	}
+
+	b.Resume()
+
+	select {
+	case msg := <-flushed:
+		if msg.Content == "" {
+			t.Fatal("expected resumed flush content")
+		}
+	case <-time.After(time.Second):
+		t.Fatal("timed out waiting for resumed flush")
+	}
+}

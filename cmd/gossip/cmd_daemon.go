@@ -2,32 +2,49 @@ package main
 
 import (
 	"context"
+	"os"
 	"os/signal"
+	"strconv"
 	"syscall"
 	"time"
 
+	"github.com/spf13/cobra"
 	"github.com/yigitkonur/gossip/internal/config"
 	"github.com/yigitkonur/gossip/internal/daemon"
 	"github.com/yigitkonur/gossip/internal/filter"
 	"github.com/yigitkonur/gossip/internal/statedir"
-	"github.com/spf13/cobra"
 )
 
 func daemonOptionsFromConfig(sd *statedir.StateDir, cfg config.Config) daemon.Options {
 	return daemon.Options{
-		StateDir:     sd,
-		AppPort:      cfg.Daemon.Port,
-		ProxyPort:    cfg.Daemon.ProxyPort,
-		ControlPort:  controlPort(),
-		FilterMode:   filter.ModeFiltered,
-		Logger:       logToStderr,
-		IdleShutdown: time.Duration(cfg.IdleShutdownSeconds) * time.Second,
+		StateDir:        sd,
+		AppPort:         cfg.Daemon.Port,
+		ProxyPort:       cfg.Daemon.ProxyPort,
+		ControlPort:     controlPort(),
+		FilterMode:      filter.ModeFiltered,
+		AttentionWindow: attentionWindowFromConfig(cfg),
+		Logger:          logToStderr,
+		IdleShutdown:    time.Duration(cfg.IdleShutdownSeconds) * time.Second,
 	}
 }
 
-type stateDirEnsurer interface { Ensure() error }
+func attentionWindowFromConfig(cfg config.Config) time.Duration {
+	for _, key := range []string{"GOSSIP_ATTENTION_WINDOW_MS", "AGENTBRIDGE_ATTENTION_WINDOW_MS"} {
+		if raw := os.Getenv(key); raw != "" {
+			if n, err := strconv.Atoi(raw); err == nil && n > 0 {
+				return time.Duration(n) * time.Millisecond
+			}
+		}
+	}
+	if cfg.TurnCoordination.AttentionWindowSeconds > 0 {
+		return time.Duration(cfg.TurnCoordination.AttentionWindowSeconds) * time.Second
+	}
+	return 15 * time.Second
+}
 
-type pidFileWriter interface { WritePid() error }
+type stateDirEnsurer interface{ Ensure() error }
+
+type pidFileWriter interface{ WritePid() error }
 
 func ensureDaemonState(sd stateDirEnsurer, lc pidFileWriter) error {
 	if err := sd.Ensure(); err != nil {

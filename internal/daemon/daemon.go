@@ -41,13 +41,14 @@ func defaultAfterFunc(d time.Duration, fn func()) stopTimer {
 
 // Options configures a daemon run.
 type Options struct {
-	StateDir     *statedir.StateDir
-	AppPort      int
-	ProxyPort    int
-	ControlPort  int
-	FilterMode   filter.Mode
-	IdleShutdown time.Duration
-	Logger       func(msg string)
+	StateDir        *statedir.StateDir
+	AppPort         int
+	ProxyPort       int
+	ControlPort     int
+	FilterMode      filter.Mode
+	AttentionWindow time.Duration
+	IdleShutdown    time.Duration
+	Logger          func(msg string)
 }
 
 // Daemon bundles the supervisor state.
@@ -67,6 +68,9 @@ type Daemon struct {
 	claudeAttached           bool
 	idleShutdownTimer        stopTimer
 	claudeDisconnectTimer    stopTimer
+	attentionWindowTimer     stopTimer
+	attentionWindowActive    bool
+	attentionWindowConnID    int64
 	claudeOnlineNoticeSent   bool
 	claudeOfflineNoticeShown bool
 	runCancel                context.CancelFunc
@@ -88,6 +92,9 @@ func New(opts Options) *Daemon {
 	}
 	if opts.FilterMode == "" {
 		opts.FilterMode = filter.ModeFiltered
+	}
+	if opts.AttentionWindow == 0 {
+		opts.AttentionWindow = 15 * time.Second
 	}
 	if opts.IdleShutdown == 0 {
 		opts.IdleShutdown = 30 * time.Second
@@ -191,6 +198,7 @@ func (d *Daemon) Run(ctx context.Context) error {
 	g.Go(func() error { return d.pumpCodexEvents(gctx) })
 
 	err := g.Wait()
+	d.clearAttentionWindow("daemon stopped")
 	d.cancelIdleShutdown()
 	_ = d.codex.Stop(context.Background())
 	return err
@@ -230,6 +238,7 @@ func (d *Daemon) handleCodexEvent(ctx context.Context, ev codex.Event) {
 			d.broadcastSystem(ctx, "system_reply_missing", "⚠️ Codex completed the turn without sending a reply while require_reply was set.")
 		}
 		d.broadcastSystem(ctx, "system_turn_completed", "✅ Codex finished the current turn. You can reply now if needed.")
+		d.startAttentionWindow(0)
 	case codex.EventAgentMessage:
 		msg, ok := ev.MessageToBridge()
 		if !ok {
@@ -244,12 +253,18 @@ func (d *Daemon) handleCodexEvent(ctx context.Context, ev codex.Event) {
 		if replyRequired {
 			d.statusBuf.Flush("reply-required message arrived")
 			d.control.Broadcast(ctx, msg)
+			if marker, _ := filter.ParseMarker(msg.Content); marker == filter.MarkerImportant {
+				d.startAttentionWindow(0)
+			}
 			return
 		}
 		result := filter.Classify(msg.Content, d.filter)
 		switch result.Action {
 		case filter.ActionForward:
 			d.control.Broadcast(ctx, msg)
+			if result.Marker == filter.MarkerImportant {
+				d.startAttentionWindow(0)
+			}
 		case filter.ActionBuffer:
 			d.statusBuf.Add(msg)
 		case filter.ActionDrop:
@@ -423,7 +438,11 @@ func (d *Daemon) OnClaudeToCodex(ctx context.Context, msg protocol.BridgeMessage
 		d.replyReceivedDuringTurn = false
 		d.stateMu.Unlock()
 	}
-	return d.codex.InjectMessage(ctx, body)
+	ok, errMsg := d.codex.InjectMessage(ctx, body)
+	if ok {
+		d.clearAttentionWindow("claude replied")
+	}
+	return ok, errMsg
 }
 
 func (d *Daemon) Snapshot() control.Status {
@@ -450,5 +469,51 @@ func (d *Daemon) Snapshot() control.Status {
 		ProxyURL:           fmt.Sprintf("ws://127.0.0.1:%d", d.opts.ProxyPort),
 		AppServerURL:       fmt.Sprintf("ws://127.0.0.1:%d", d.opts.AppPort),
 		Pid:                os.Getpid(),
+	}
+}
+
+func (d *Daemon) startAttentionWindow(connID int64) {
+	d.stateMu.Lock()
+	if d.statusBuf == nil {
+		d.stateMu.Unlock()
+		return
+	}
+	if d.attentionWindowTimer != nil {
+		d.attentionWindowTimer.Stop()
+		d.attentionWindowTimer = nil
+	}
+	d.attentionWindowActive = true
+	d.attentionWindowConnID = connID
+	statusBuf := d.statusBuf
+	var timer stopTimer
+	timer = d.afterFunc(d.opts.AttentionWindow, func() {
+		d.clearAttentionWindow("expired")
+	})
+	d.attentionWindowTimer = timer
+	d.stateMu.Unlock()
+	statusBuf.Pause()
+	if d.opts.Logger != nil {
+		d.opts.Logger(fmt.Sprintf("attention window started (%dms, conn=%d)", d.opts.AttentionWindow.Milliseconds(), connID))
+	}
+}
+
+func (d *Daemon) clearAttentionWindow(reason string) {
+	d.stateMu.Lock()
+	active := d.attentionWindowActive
+	timer := d.attentionWindowTimer
+	connID := d.attentionWindowConnID
+	statusBuf := d.statusBuf
+	d.attentionWindowActive = false
+	d.attentionWindowConnID = 0
+	d.attentionWindowTimer = nil
+	d.stateMu.Unlock()
+	if timer != nil {
+		timer.Stop()
+	}
+	if active && statusBuf != nil {
+		statusBuf.Resume()
+		if d.opts.Logger != nil {
+			d.opts.Logger(fmt.Sprintf("attention window cleared (%s, conn=%d)", reason, connID))
+		}
 	}
 }

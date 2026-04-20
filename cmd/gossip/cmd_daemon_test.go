@@ -15,16 +15,27 @@ func TestDaemonOptionsFromConfig_UsesControlPortHelper(t *testing.T) {
 	cfg.Daemon.Port = 4600
 	cfg.Daemon.ProxyPort = 4601
 	cfg.IdleShutdownSeconds = 45
+	cfg.TurnCoordination.AttentionWindowSeconds = 22
 
 	opts := daemonOptionsFromConfig(sd, cfg)
 	if opts.ControlPort != 45123 {
 		t.Fatalf("ControlPort = %d, want 45123", opts.ControlPort)
+	}
+	if opts.AttentionWindow != 22*time.Second {
+		t.Fatalf("AttentionWindow = %s, want 22s", opts.AttentionWindow)
 	}
 	if opts.IdleShutdown != 45*time.Second {
 		t.Fatalf("IdleShutdown = %s", opts.IdleShutdown)
 	}
 }
 
+func TestAttentionWindowFromConfig_EnvOverrideWins(t *testing.T) {
+	t.Setenv("GOSSIP_ATTENTION_WINDOW_MS", "2500")
+	t.Setenv("AGENTBRIDGE_ATTENTION_WINDOW_MS", "7000")
+	if got := attentionWindowFromConfig(config.DefaultConfig); got != 2500*time.Millisecond {
+		t.Fatalf("attentionWindowFromConfig() = %s, want 2500ms", got)
+	}
+}
 
 type fakeEnsurer struct{ err error }
 

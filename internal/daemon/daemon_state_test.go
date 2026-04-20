@@ -38,3 +38,30 @@ func TestDaemon_StateHandlers_NoDataRace(t *testing.T) {
 	}
 	wg.Wait()
 }
+
+func TestDaemon_AttentionWindowPausesStatusFlushesUntilExpiry(t *testing.T) {
+	flushed := make(chan protocol.BridgeMessage, 1)
+	d := New(Options{FilterMode: filter.ModeFiltered, AttentionWindow: 50 * time.Millisecond})
+	d.control = control.NewServer(d)
+	d.statusBuf = filter.NewStatusBuffer(func(msg protocol.BridgeMessage) { flushed <- msg }, filter.StatusBufferOptions{FlushThreshold: 3, FlushTimeout: time.Hour})
+	d.startAttentionWindow(42)
+
+	for i := 0; i < 3; i++ {
+		d.handleCodexEvent(context.Background(), codex.Event{Kind: codex.EventAgentMessage, ThreadID: "thread_1", TurnID: fmt.Sprintf("turn_%d", i), Text: "[STATUS] compiling"})
+	}
+
+	select {
+	case msg := <-flushed:
+		t.Fatalf("STATUS should stay buffered during attention window, got %q", msg.Content)
+	case <-time.After(25 * time.Millisecond):
+	}
+
+	select {
+	case msg := <-flushed:
+		if msg.Content == "" {
+			t.Fatal("expected flushed STATUS summary after attention window expiry")
+		}
+	case <-time.After(time.Second):
+		t.Fatal("timed out waiting for STATUS flush after attention window expiry")
+	}
+}
