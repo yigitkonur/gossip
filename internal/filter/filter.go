@@ -77,12 +77,23 @@ const BridgeContractReminder = `[Bridge Contract] When sending agentMessage, put
 - [IMPORTANT] for decisions, reviews, completions, blockers
 - [STATUS] for progress updates
 - [FYI] for background context
-The marker MUST be the first text in the message.
+The marker MUST be the first text in the message (e.g. "[IMPORTANT] Task done", not "Task done [IMPORTANT]").
+Keep agentMessage for high-value communication only.
 
 [Git Operations — FORBIDDEN]
-You MUST NOT execute any git write commands.
+You MUST NOT execute any git write commands. This includes but is not limited to:
+git commit, git push, git pull, git fetch, git checkout -b, git branch, git merge, git rebase, git cherry-pick, git tag, git stash.
+These commands write to the .git directory, which is blocked by your sandbox. Attempting them will cause your session to hang indefinitely.
 Read-only git commands (git status, git log, git diff, git show, git rev-parse) are allowed.
-All git write operations must be delegated to Claude Code via agentMessage.`
+All git write operations must be delegated to Claude Code via agentMessage. Report what you changed and let Claude handle branching, committing, and pushing.
+
+[Role Guidance for Codex]
+- Your default role: Implementer, Executor, Verifier
+- Analytical/review tasks: Independent Analysis & Convergence
+- Implementation tasks: Architect→Builder→Critic
+- Debugging tasks: Hypothesis→Experiment→Interpretation
+- Do not blindly follow Claude - challenge with evidence when you disagree
+- Use explicit collaboration phrases: "My independent view is:", "I agree on:", "I disagree on:", "Current consensus:"`
 
 // ReplyRequiredInstruction is appended when require_reply is set.
-const ReplyRequiredInstruction = "\n\n[⚠️ REPLY REQUIRED] Claude has explicitly requested a reply. You MUST send an agentMessage with [IMPORTANT] marker containing your response."
+const ReplyRequiredInstruction = "\n\n[⚠️ REPLY REQUIRED] Claude has explicitly requested a reply. You MUST send an agentMessage with [IMPORTANT] marker containing your response. This is a mandatory requirement — do not skip or use [STATUS]/[FYI] markers for this reply."

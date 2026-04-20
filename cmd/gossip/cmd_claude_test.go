@@ -1,6 +1,7 @@
 package main
 
 import (
+	"strings"
 	"testing"
 
 	"github.com/yigitkonur/gossip/internal/config"
@@ -58,4 +59,17 @@ func TestResolveClaudeDeliveryMode(t *testing.T) {
 			t.Fatalf("logs = %#v, want exactly default-pull message", logs)
 		}
 	})
+}
+
+func TestClaudeInstructionsIncludeSentinels(t *testing.T) {
+	for _, needle := range []string{
+		"## Message delivery",
+		"Architect→Builder→Critic",
+		"chat_id: line",
+		"Current consensus:",
+	} {
+		if !strings.Contains(claudeInstructions, needle) {
+			t.Fatalf("claudeInstructions missing %q", needle)
+		}
+	}
 }
