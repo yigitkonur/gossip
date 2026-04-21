@@ -1,0 +1,90 @@
+name: install.sh smoke
+
+on:
+  push:
+    branches: [master]
+    paths:
+      - "install.sh"
+      - ".github/workflows/install-smoke.yml"
+  pull_request:
+    paths:
+      - "install.sh"
+      - ".github/workflows/install-smoke.yml"
+  release:
+    types: [published]
+
+jobs:
+  # Static checks + dry flags — always run.
+  lint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: bash -n (syntax check)
+        run: bash -n install.sh
+
+      - name: shellcheck
+        uses: ludeeus/action-shellcheck@master
+        with:
+          scandir: .
+          severity: warning
+          additional_files: install.sh
+
+      - name: --help renders
+        run: bash install.sh --help
+
+      - name: unknown flag errors cleanly
+        run: |
+          if bash install.sh --definitely-not-a-flag; then
+            echo "expected failure, got success"; exit 1
+          fi
+
+      - name: --uninstall is a graceful no-op when nothing is installed
+        run: |
+          dir="$(mktemp -d)"
+          bash install.sh --uninstall --install-dir "$dir"
+
+  # End-to-end install against the just-published release.
+  install:
+    if: github.event_name == 'release'
+    needs: lint
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: install gossip into a user-writable dir
+        env:
+          NO_COLOR: "1"
+        run: |
+          dir="$RUNNER_TEMP/bin"
+          bash install.sh --install-dir "$dir" --version "${{ github.event.release.tag_name }}"
+          "$dir/gossip" version
+
+      - name: rerunning installer is idempotent
+        env:
+          NO_COLOR: "1"
+        run: |
+          dir="$RUNNER_TEMP/bin"
+          out="$(bash install.sh --install-dir "$dir" --version "${{ github.event.release.tag_name }}")"
+          echo "$out"
+          echo "$out" | grep -q "already installed"
+
+      - name: --force reinstalls
+        env:
+          NO_COLOR: "1"
+        run: |
+          dir="$RUNNER_TEMP/bin"
+          bash install.sh --install-dir "$dir" --version "${{ github.event.release.tag_name }}" --force
+          "$dir/gossip" version
+
+      - name: --uninstall removes the binary
+        run: |
+          dir="$RUNNER_TEMP/bin"
+          bash install.sh --uninstall --install-dir "$dir"
+          if [ -e "$dir/gossip" ]; then
+            echo "expected gossip removed"; exit 1
+          fi

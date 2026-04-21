@@ -59,7 +59,8 @@ warn() { printf "%s⚠%s   %s\n" "${C_YELLOW}${C_BOLD}" "${C_RESET}" "$*" >&2; }
 die()  { printf "%s✗%s   %s\n" "${C_RED}${C_BOLD}" "${C_RESET}" "$*" >&2; exit 1; }
 dim()  { printf "%s%s%s"      "${C_DIM}"             "$*" "${C_RESET}"; }
 
-trap 'code=$?; [ $code -ne 0 ] && warn "install aborted (exit $code)"' ERR
+on_err() { local ec=$?; [ $ec -ne 0 ] && warn "install aborted (exit $ec)"; }
+trap on_err ERR
 
 # ------------------------------------------------------------------- banner
 banner() {
