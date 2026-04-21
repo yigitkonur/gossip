@@ -60,8 +60,7 @@ detect_os() {
   case "$os" in
     Darwin) echo "darwin" ;;
     Linux)  echo "linux" ;;
-    MINGW*|MSYS*|CYGWIN*) echo "windows" ;;
-    *) die "unsupported OS: $os (install a prebuilt binary from the Releases page)" ;;
+    *) die "unsupported OS: $os (gossip supports macOS and Linux)" ;;
   esac
 }
 
@@ -153,11 +152,7 @@ main() {
   info "version     : ${C_BOLD}${version}${C_RESET}"
   info "install dir : ${C_BOLD}${INSTALL_DIR}${C_RESET}"
 
-  if [ "$os" = "windows" ]; then
-    archive_name="gossip_${version#v}_${os}_${arch}.zip"
-  else
-    archive_name="gossip_${version#v}_${os}_${arch}.tar.gz"
-  fi
+  archive_name="gossip_${version#v}_${os}_${arch}.tar.gz"
   archive_url="https://github.com/${REPO}/releases/download/${version}/${archive_name}"
   sums_url="https://github.com/${REPO}/releases/download/${version}/checksums.txt"
 
@@ -172,20 +167,14 @@ main() {
   fi
 
   info "extracting"
-  if [ "$os" = "windows" ]; then
-    require_cmd unzip
-    unzip -q "$tmp/${archive_name}" -d "$tmp/extract"
-  else
-    mkdir -p "$tmp/extract"
-    tar -xzf "$tmp/${archive_name}" -C "$tmp/extract"
-  fi
+  mkdir -p "$tmp/extract"
+  tar -xzf "$tmp/${archive_name}" -C "$tmp/extract"
 
   local extracted_bin
   extracted_bin="$(find "$tmp/extract" -type f -name "gossip*" ! -name "*.md" ! -name "*.txt" | head -n 1)"
   [ -n "$extracted_bin" ] || die "archive layout unexpected: could not find gossip binary in $tmp/extract"
 
   local dst="${INSTALL_DIR}/${BINARY_NAME}"
-  [ "$os" = "windows" ] && dst="${INSTALL_DIR}/${BINARY_NAME}.exe"
 
   install_binary "$extracted_bin" "$dst"
   ok "installed ${C_BOLD}${dst}${C_RESET}"

@@ -78,9 +78,8 @@ Supported targets:
 | ------- | ------------------ |
 | macOS   | `arm64`, `amd64`   |
 | Linux   | `amd64`, `arm64`   |
-| Windows | `amd64` (manual)   |
 
-Windows users: download the `.zip` from the [Releases page](https://github.com/yigitkonur/gossip/releases/latest) and place `gossip.exe` on your `PATH`.
+Gossip is POSIX-only: the daemon relies on Unix signals, PID files, and terminal state handling that does not exist on Windows.
 
 ## Five-minute quick start
 
@@ -298,7 +297,6 @@ Gossip ships as a single static binary. The `Makefile` bakes in targets for ever
 make release-all     # build every OS/arch into dist/
 make release-darwin  # macOS (arm64 + amd64)
 make release-linux   # Linux (amd64 + arm64)
-make release-windows # Windows (amd64)
 ```
 
 Output layout:
@@ -308,8 +306,7 @@ dist/
 ├── gossip_darwin_amd64/gossip
 ├── gossip_darwin_arm64/gossip
 ├── gossip_linux_amd64/gossip
-├── gossip_linux_arm64/gossip
-└── gossip_windows_amd64/gossip.exe
+└── gossip_linux_arm64/gossip
 ```
 
 Each binary is trim-pathed and stripped (`-trimpath -ldflags="-s -w"`) and embeds the git-describe version at build time.
