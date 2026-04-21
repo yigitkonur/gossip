@@ -2,7 +2,10 @@
 // (foreground MCP server) and daemon (background Codex proxy host).
 package control
 
-import "github.com/yigitkonur/gossip/internal/protocol"
+import (
+	"github.com/coder/websocket"
+	"github.com/yigitkonur/gossip/internal/protocol"
+)
 
 // ClientMessage is a bridge-to-daemon message.
 type ClientMessage struct {
@@ -35,13 +38,16 @@ const (
 	ServerMsgStatus              = "status"
 )
 
+const CloseCodeReplaced websocket.StatusCode = 4001
+
 // Status is a daemon snapshot.
 type Status struct {
-	BridgeReady        bool   `json:"bridgeReady"`
-	TuiConnected       bool   `json:"tuiConnected"`
-	ThreadID           string `json:"threadId"`
-	QueuedMessageCount int    `json:"queuedMessageCount"`
-	ProxyURL           string `json:"proxyUrl"`
-	AppServerURL       string `json:"appServerUrl"`
-	Pid                int    `json:"pid"`
+	BridgeReady         bool   `json:"bridgeReady"`
+	TuiConnected        bool   `json:"tuiConnected"`
+	ThreadID            string `json:"threadId"`
+	QueuedMessageCount  int    `json:"queuedMessageCount"`
+	DroppedMessageCount int    `json:"droppedMessageCount"`
+	ProxyURL            string `json:"proxyUrl"`
+	AppServerURL        string `json:"appServerUrl"`
+	Pid                 int    `json:"pid"`
 }

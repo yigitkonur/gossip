@@ -90,6 +90,10 @@ type writeCloser struct{ io.Writer }
 
 func (writeCloser) Close() error { return nil }
 
+type errorWriter struct{ err error }
+
+func (w errorWriter) Write([]byte) (int, error) { return 0, w.err }
+
 func firstLine(s string) string {
 	idx := strings.IndexByte(s, '\n')
 	if idx < 0 {

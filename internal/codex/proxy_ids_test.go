@@ -9,8 +9,8 @@ func TestProxyIDTable_AllocateAndResolve(t *testing.T) {
 	tbl := newProxyIDTable()
 
 	proxyID := tbl.Allocate(connID(1), json.RawMessage(`5`))
-	if proxyID <= 0 {
-		t.Fatalf("proxyID should be positive, got %d", proxyID)
+	if proxyID != 100000 {
+		t.Fatalf("proxyID = %d, want 100000", proxyID)
 	}
 
 	cid, orig, ok := tbl.Resolve(proxyID)
@@ -38,5 +38,16 @@ func TestProxyIDTable_AllocateUnique(t *testing.T) {
 			t.Fatalf("duplicate id %d", id)
 		}
 		seen[id] = struct{}{}
+	}
+}
+
+func TestProxyIDTable_ForgetID(t *testing.T) {
+	tbl := newProxyIDTable()
+	proxyID := tbl.Allocate(connID(1), json.RawMessage(`7`))
+
+	tbl.ForgetID(proxyID)
+
+	if _, _, ok := tbl.Resolve(proxyID); ok {
+		t.Fatalf("Resolve(%d) unexpectedly succeeded after ForgetID", proxyID)
 	}
 }

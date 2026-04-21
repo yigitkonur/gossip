@@ -52,6 +52,9 @@ func (s *StateDir) LockFile() string { return filepath.Join(s.dir, "daemon.lock"
 // StatusFile returns the daemon status JSON file path.
 func (s *StateDir) StatusFile() string { return filepath.Join(s.dir, "status.json") }
 
+// PortsFile returns the daemon port map JSON file.
+func (s *StateDir) PortsFile() string { return filepath.Join(s.dir, "ports.json") }
+
 // LogFile returns the combined log file path.
 func (s *StateDir) LogFile() string { return filepath.Join(s.dir, "gossip.log") }
 

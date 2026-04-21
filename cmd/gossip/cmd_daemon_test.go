@@ -5,6 +5,7 @@ import (
 	"time"
 
 	"github.com/yigitkonur/gossip/internal/config"
+	"github.com/yigitkonur/gossip/internal/filter"
 	"github.com/yigitkonur/gossip/internal/statedir"
 )
 
@@ -15,16 +16,80 @@ func TestDaemonOptionsFromConfig_UsesControlPortHelper(t *testing.T) {
 	cfg.Daemon.Port = 4600
 	cfg.Daemon.ProxyPort = 4601
 	cfg.IdleShutdownSeconds = 45
+	cfg.TurnCoordination.AttentionWindowSeconds = 22
 
 	opts := daemonOptionsFromConfig(sd, cfg)
 	if opts.ControlPort != 45123 {
 		t.Fatalf("ControlPort = %d, want 45123", opts.ControlPort)
+	}
+	if opts.AttentionWindow != 22*time.Second {
+		t.Fatalf("AttentionWindow = %s, want 22s", opts.AttentionWindow)
 	}
 	if opts.IdleShutdown != 45*time.Second {
 		t.Fatalf("IdleShutdown = %s", opts.IdleShutdown)
 	}
 }
 
+func TestAttentionWindowFromConfig_EnvOverrideWins(t *testing.T) {
+	t.Setenv("GOSSIP_ATTENTION_WINDOW_MS", "2500")
+	if got := attentionWindowFromConfig(config.DefaultConfig); got != 2500*time.Millisecond {
+		t.Fatalf("attentionWindowFromConfig() = %s, want 2500ms", got)
+	}
+}
+
+func TestIdleShutdownFromConfig_EnvOverrideWins(t *testing.T) {
+	t.Setenv("GOSSIP_IDLE_SHUTDOWN_MS", "9000")
+	if got := idleShutdownFromConfig(config.Config{IdleShutdownSeconds: 30}); got != 9*time.Second {
+		t.Fatalf("idleShutdownFromConfig() = %s, want 9s", got)
+	}
+}
+
+func TestIdleShutdownFromConfig_FallsBackToConfig(t *testing.T) {
+	t.Setenv("GOSSIP_IDLE_SHUTDOWN_MS", "")
+	if got := idleShutdownFromConfig(config.Config{IdleShutdownSeconds: 42}); got != 42*time.Second {
+		t.Fatalf("idleShutdownFromConfig() = %s, want 42s", got)
+	}
+}
+
+func TestDaemonFilterMode_UsesEnvAndLogsMode(t *testing.T) {
+	t.Setenv("GOSSIP_FILTER_MODE", "passthrough")
+	var logs []string
+	got := daemonFilterMode(func(msg string) { logs = append(logs, msg) })
+	if got != filter.ModeFull {
+		t.Fatalf("daemonFilterMode() = %q, want %q", got, filter.ModeFull)
+	}
+	if len(logs) != 1 || logs[0] != "Filter mode: full" {
+		t.Fatalf("logs = %#v, want Filter mode: full", logs)
+	}
+}
+
+func TestDaemonFilterMode_DefaultsToFiltered(t *testing.T) {
+	got := daemonFilterMode(nil)
+	if got != filter.ModeFiltered {
+		t.Fatalf("daemonFilterMode() = %q, want %q", got, filter.ModeFiltered)
+	}
+}
+
+func TestParseFilterMode_AcceptsExplicitModes(t *testing.T) {
+	tests := []struct {
+		raw  string
+		want filter.Mode
+	}{
+		{raw: "filtered", want: filter.ModeFiltered},
+		{raw: "full", want: filter.ModeFull},
+		{raw: "passthrough", want: filter.ModeFull},
+	}
+
+	for _, tt := range tests {
+		got, ok := parseFilterMode(tt.raw)
+		if !ok {
+			t.Fatalf("parseFilterMode(%q) returned ok=false", tt.raw)
+		}
+		if got != tt.want {
+			t.Fatalf("parseFilterMode(%q) = %q, want %q", tt.raw, got, tt.want)
+		}
+	}
+}
 
 type fakeEnsurer struct{ err error }
 

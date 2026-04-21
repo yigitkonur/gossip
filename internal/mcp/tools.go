@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/yigitkonur/gossip/internal/protocol"
@@ -82,7 +83,7 @@ func (s *Server) handleReplyTool(ctx context.Context, reqID json.RawMessage, arg
 	}
 	response := "Reply sent to Codex."
 	if pending := s.pendingCount(); pending > 0 {
-		response += fmt.Sprintf(" Note: %d unread Codex message(s) waiting — call get_messages.", pending)
+		response += fmt.Sprintf(" Note: %d unread Codex message(s) already waiting — call get_messages to read them.", pending)
 	}
 	s.respond(reqID, ToolCallResult{Content: []ToolContent{{Type: "text", Text: response}}})
 }
@@ -98,15 +99,17 @@ func (s *Server) handleGetMessagesTool(reqID json.RawMessage) {
 	if count != 1 {
 		plural = "s"
 	}
-	header := fmt.Sprintf("[%d new message%s from Codex]", count, plural)
+	var header strings.Builder
+	header.WriteString(fmt.Sprintf("[%d new message%s from Codex]", count, plural))
 	if dropped > 0 {
-		header += fmt.Sprintf(" (%d older message(s) were dropped due to queue overflow)", dropped)
+		header.WriteString(fmt.Sprintf("\n(%d older message(s) were dropped due to queue overflow)", dropped))
 	}
+	header.WriteString(fmt.Sprintf("\nchat_id: %s", s.chatID()))
 	var body string
 	for i, m := range messages {
 		body += fmt.Sprintf("\n---\n[%d] %s\nCodex: %s", i+1, time.UnixMilli(m.Timestamp).Format(time.RFC3339), m.Content)
 	}
-	s.respond(reqID, ToolCallResult{Content: []ToolContent{{Type: "text", Text: header + body}}})
+	s.respond(reqID, ToolCallResult{Content: []ToolContent{{Type: "text", Text: header.String() + body}}})
 }
 
 func (s *Server) drainQueue() ([]protocol.BridgeMessage, int) {
@@ -114,6 +117,13 @@ func (s *Server) drainQueue() ([]protocol.BridgeMessage, int) {
 	defer s.queueMu.Unlock()
 	msgs := s.queue
 	dropped := s.droppedMessages
+	if s.opts.DroppedCountProvider != nil {
+		externalDropped := s.opts.DroppedCountProvider()
+		if externalDropped > s.lastExternalDropped {
+			dropped += externalDropped - s.lastExternalDropped
+		}
+		s.lastExternalDropped = externalDropped
+	}
 	s.queue = nil
 	s.droppedMessages = 0
 	return msgs, dropped

@@ -2,32 +2,81 @@ package main
 
 import (
 	"context"
+	"os"
 	"os/signal"
+	"strconv"
+	"strings"
 	"syscall"
 	"time"
 
+	"github.com/spf13/cobra"
 	"github.com/yigitkonur/gossip/internal/config"
 	"github.com/yigitkonur/gossip/internal/daemon"
 	"github.com/yigitkonur/gossip/internal/filter"
 	"github.com/yigitkonur/gossip/internal/statedir"
-	"github.com/spf13/cobra"
 )
 
 func daemonOptionsFromConfig(sd *statedir.StateDir, cfg config.Config) daemon.Options {
 	return daemon.Options{
-		StateDir:     sd,
-		AppPort:      cfg.Daemon.Port,
-		ProxyPort:    cfg.Daemon.ProxyPort,
-		ControlPort:  controlPort(),
-		FilterMode:   filter.ModeFiltered,
-		Logger:       logToStderr,
-		IdleShutdown: time.Duration(cfg.IdleShutdownSeconds) * time.Second,
+		StateDir:        sd,
+		AppPort:         cfg.Daemon.Port,
+		ProxyPort:       cfg.Daemon.ProxyPort,
+		ControlPort:     controlPort(),
+		FilterMode:      filter.ModeFiltered,
+		AttentionWindow: attentionWindowFromConfig(cfg),
+		Logger:          logToStderr,
+		IdleShutdown:    idleShutdownFromConfig(cfg),
 	}
 }
 
-type stateDirEnsurer interface { Ensure() error }
+func attentionWindowFromConfig(cfg config.Config) time.Duration {
+	if raw := os.Getenv("GOSSIP_ATTENTION_WINDOW_MS"); raw != "" {
+		if n, err := strconv.Atoi(raw); err == nil && n > 0 {
+			return time.Duration(n) * time.Millisecond
+		}
+	}
+	if cfg.TurnCoordination.AttentionWindowSeconds > 0 {
+		return time.Duration(cfg.TurnCoordination.AttentionWindowSeconds) * time.Second
+	}
+	return 15 * time.Second
+}
 
-type pidFileWriter interface { WritePid() error }
+func idleShutdownFromConfig(cfg config.Config) time.Duration {
+	if raw := os.Getenv("GOSSIP_IDLE_SHUTDOWN_MS"); raw != "" {
+		if n, err := strconv.Atoi(raw); err == nil && n > 0 {
+			return time.Duration(n) * time.Millisecond
+		}
+	}
+	return time.Duration(cfg.IdleShutdownSeconds) * time.Second
+}
+
+func daemonFilterMode(logger func(string)) filter.Mode {
+	if mode, ok := parseFilterMode(os.Getenv("GOSSIP_FILTER_MODE")); ok {
+		if logger != nil {
+			logger("Filter mode: " + string(mode))
+		}
+		return mode
+	}
+	if logger != nil {
+		logger("Filter mode: " + string(filter.ModeFiltered))
+	}
+	return filter.ModeFiltered
+}
+
+func parseFilterMode(raw string) (filter.Mode, bool) {
+	switch strings.ToLower(strings.TrimSpace(raw)) {
+	case string(filter.ModeFiltered):
+		return filter.ModeFiltered, true
+	case string(filter.ModeFull), "passthrough":
+		return filter.ModeFull, true
+	default:
+		return "", false
+	}
+}
+
+type stateDirEnsurer interface{ Ensure() error }
+
+type pidFileWriter interface{ WritePid() error }
 
 func ensureDaemonState(sd stateDirEnsurer, lc pidFileWriter) error {
 	if err := sd.Ensure(); err != nil {
@@ -55,7 +104,9 @@ func newDaemonCmd() *cobra.Command {
 
 			ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 			defer stop()
-			d := daemon.New(daemonOptionsFromConfig(sd, cfg))
+			opts := daemonOptionsFromConfig(sd, cfg)
+			opts.FilterMode = daemonFilterMode(logToStderr)
+			d := daemon.New(opts)
 			return d.Run(ctx)
 		},
 	}

@@ -13,12 +13,16 @@ import (
 	"github.com/yigitkonur/gossip/internal/protocol"
 )
 
+const reconnectDelayCap = 30 * time.Second
+
 // ClientOptions configures a Client.
 type ClientOptions struct {
 	URL             string
 	OnCodexMsg      func(msg protocol.BridgeMessage)
 	OnStatus        func(status Status)
 	OnDisconnect    func(code int, reason string, uptime time.Duration)
+	OnRejected      func(code int, reason string, uptime time.Duration)
+	OnReconnect     func()
 	Logger          func(msg string)
 	MaxBackoff      time.Duration
 	ShouldReconnect func() bool
@@ -38,7 +42,7 @@ type Client struct {
 // NewClient constructs a Client.
 func NewClient(opts ClientOptions) *Client {
 	if opts.MaxBackoff == 0 {
-		opts.MaxBackoff = 30 * time.Second
+		opts.MaxBackoff = reconnectDelayCap
 	}
 	return &Client{opts: opts, pending: make(map[string]chan ServerMessage)}
 }
@@ -106,6 +110,8 @@ func (c *Client) Disconnect() {
 // RunWithReconnect connects and reconnects with exponential backoff until ctx is cancelled.
 func (c *Client) RunWithReconnect(ctx context.Context) error {
 	attempt := 0
+	maxBackoff := effectiveReconnectMax(c.opts.MaxBackoff)
+	connectedOnce := false
 	for {
 		if ctx.Err() != nil {
 			return nil
@@ -115,20 +121,35 @@ func (c *Client) RunWithReconnect(ctx context.Context) error {
 		}
 		err := c.Connect(ctx)
 		if err == nil {
-			if err := c.AttachClaude(ctx); err != nil && c.opts.Logger != nil {
-				c.opts.Logger("attach failed: " + err.Error())
+			attachErr := c.AttachClaude(ctx)
+			if attachErr != nil {
+				if c.opts.Logger != nil {
+					c.opts.Logger("attach failed: " + attachErr.Error())
+				}
+			} else if connectedOnce && c.opts.OnReconnect != nil {
+				c.opts.OnReconnect()
 			}
+			connectedOnce = true
 			c.waitClosed(ctx)
+			if ctx.Err() != nil {
+				return nil
+			}
+			if c.opts.ShouldReconnect != nil && !c.opts.ShouldReconnect() {
+				return nil
+			}
+			delay := reconnectCooldown(maxBackoff)
+			select {
+			case <-ctx.Done():
+				return nil
+			case <-time.After(delay):
+			}
 			attempt = 0
 			continue
 		}
 		if c.opts.Logger != nil {
 			c.opts.Logger(fmt.Sprintf("control dial failed (attempt %d): %v", attempt+1, err))
 		}
-		backoff := time.Duration(1<<minInt(attempt, 5)) * time.Second
-		if backoff > c.opts.MaxBackoff {
-			backoff = c.opts.MaxBackoff
-		}
+		backoff := reconnectBackoff(attempt, maxBackoff)
 		select {
 		case <-ctx.Done():
 			return nil
@@ -136,6 +157,31 @@ func (c *Client) RunWithReconnect(ctx context.Context) error {
 		}
 		attempt++
 	}
+}
+
+func effectiveReconnectMax(max time.Duration) time.Duration {
+	if max <= 0 || max > reconnectDelayCap {
+		return reconnectDelayCap
+	}
+	return max
+}
+
+func reconnectCooldown(max time.Duration) time.Duration {
+	max = effectiveReconnectMax(max)
+	if max < reconnectDelayCap {
+		return max
+	}
+	// Divergence: we keep a 30s post-disconnect reconnect floor to prevent bridge reconnect churn, even though current TS retries sooner.
+	return reconnectDelayCap
+}
+
+func reconnectBackoff(attempt int, max time.Duration) time.Duration {
+	max = effectiveReconnectMax(max)
+	backoff := time.Duration(1<<minInt(attempt, 5)) * time.Second
+	if backoff > max {
+		return max
+	}
+	return backoff
 }
 
 func (c *Client) waitClosed(ctx context.Context) {
@@ -157,6 +203,9 @@ func (c *Client) waitClosed(ctx context.Context) {
 }
 
 func (c *Client) readLoop(ctx context.Context, conn *websocket.Conn) {
+	closeCode := 0
+	closeReason := "read loop exit"
+	rejected := false
 	defer func() {
 		c.mu.Lock()
 		openedAt := c.openedAt
@@ -164,13 +213,27 @@ func (c *Client) readLoop(ctx context.Context, conn *websocket.Conn) {
 			c.conn = nil
 		}
 		c.mu.Unlock()
+		if rejected {
+			c.rejectPendingReplies("Gossip daemon rejected this session.")
+			if c.opts.OnRejected != nil {
+				c.opts.OnRejected(closeCode, closeReason, time.Since(openedAt))
+			}
+			return
+		}
+		c.rejectPendingReplies("Daemon connection closed")
 		if c.opts.OnDisconnect != nil {
-			c.opts.OnDisconnect(0, "read loop exit", time.Since(openedAt))
+			c.opts.OnDisconnect(closeCode, closeReason, time.Since(openedAt))
 		}
 	}()
 	for {
 		_, payload, err := conn.Read(ctx)
 		if err != nil {
+			var closeErr websocket.CloseError
+			if errors.As(err, &closeErr) {
+				closeCode = int(closeErr.Code)
+				closeReason = closeErr.Reason
+				rejected = closeErr.Code == CloseCodeReplaced
+			}
 			return
 		}
 		var msg ServerMessage
@@ -223,4 +286,16 @@ func minInt(a, b int) int {
 		return a
 	}
 	return b
+}
+
+func (c *Client) rejectPendingReplies(error string) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	for requestID, pending := range c.pending {
+		select {
+		case pending <- ServerMessage{Type: ServerMsgClaudeToCodexResult, RequestID: requestID, Success: false, Error: error}:
+		default:
+		}
+		delete(c.pending, requestID)
+	}
 }

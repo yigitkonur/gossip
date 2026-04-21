@@ -31,6 +31,7 @@ type Event struct {
 	TurnID   string
 	Text     string
 	Approval *ApprovalRequest
+	ExitCode *int
 }
 
 // ApprovalRequest holds the information needed to respond to a server approval.

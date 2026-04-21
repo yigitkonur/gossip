@@ -77,10 +77,15 @@ func (s *Service) Load() (Config, error) {
 	if err != nil {
 		return Config{}, err
 	}
-	var cfg Config
+	cfg := cloneDefaultConfig()
 	if err := json.Unmarshal(b, &cfg); err != nil {
 		return Config{}, fmt.Errorf("parse %s: %w", s.configPath, err)
 	}
+	var raw map[string]any
+	if err := json.Unmarshal(b, &raw); err != nil {
+		return Config{}, fmt.Errorf("parse %s: %w", s.configPath, err)
+	}
+	normalizeCompatConfig(&cfg, raw)
 	return cfg, nil
 }
 
@@ -88,7 +93,7 @@ func (s *Service) Load() (Config, error) {
 func (s *Service) LoadOrDefault() Config {
 	cfg, err := s.Load()
 	if err != nil {
-		return DefaultConfig
+		return cloneDefaultConfig()
 	}
 	return cfg
 }
@@ -130,4 +135,51 @@ func (s *Service) InitDefaults() ([]string, error) {
 		created = append(created, s.collaborationPath)
 	}
 	return created, nil
+}
+
+func cloneDefaultConfig() Config {
+	cfg := DefaultConfig
+	cfg.Agents = make(map[string]AgentConfig, len(DefaultConfig.Agents))
+	for name, agent := range DefaultConfig.Agents {
+		cfg.Agents[name] = agent
+	}
+	cfg.Markers = append([]string(nil), DefaultConfig.Markers...)
+	return cfg
+}
+
+func normalizeCompatConfig(cfg *Config, raw map[string]any) {
+	if cfg.Agents == nil {
+		cfg.Agents = make(map[string]AgentConfig)
+	}
+	if codexRaw, ok := raw["codex"].(map[string]any); ok {
+		if appPort, ok := normalizeCompatInt(codexRaw["appPort"]); ok {
+			cfg.Daemon.Port = appPort
+		}
+		if proxyPort, ok := normalizeCompatInt(codexRaw["proxyPort"]); ok {
+			cfg.Daemon.ProxyPort = proxyPort
+		}
+	}
+	if claudeRaw, ok := raw["claude"].(map[string]any); ok {
+		if mode, ok := claudeRaw["mode"].(string); ok && mode != "" {
+			agent := cfg.Agents["claude"]
+			if agent.Role == "" {
+				agent.Role = DefaultConfig.Agents["claude"].Role
+			}
+			agent.Mode = mode
+			cfg.Agents["claude"] = agent
+		}
+	}
+}
+
+func normalizeCompatInt(value any) (int, bool) {
+	switch v := value.(type) {
+	case float64:
+		return int(v), true
+	case string:
+		var parsed int
+		if _, err := fmt.Sscanf(v, "%d", &parsed); err == nil {
+			return parsed, true
+		}
+	}
+	return 0, false
 }

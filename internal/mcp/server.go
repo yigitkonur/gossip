@@ -15,13 +15,15 @@ import (
 
 // ServerOptions configures an MCP server.
 type ServerOptions struct {
-	Name                string
-	Version             string
-	Instructions        string
-	ReplyHandler        func(ctx context.Context, msg protocol.BridgeMessage, requireReply bool) ReplyResult
-	Logger              func(msg string)
-	DeliveryMode        DeliveryMode
-	MaxBufferedMessages int
+	Name                 string
+	Version              string
+	Instructions         string
+	ReplyHandler         func(ctx context.Context, msg protocol.BridgeMessage, requireReply bool) ReplyResult
+	ChatIDProvider       func() string
+	DroppedCountProvider func() int
+	Logger               func(msg string)
+	DeliveryMode         DeliveryMode
+	MaxBufferedMessages  int
 }
 
 // DeliveryMode identifies how the server surfaces Codex messages to Claude.
@@ -49,9 +51,10 @@ type Server struct {
 	ready          chan struct{}
 	readyCloseOnce sync.Once
 
-	queueMu         sync.Mutex
-	queue           []protocol.BridgeMessage
-	droppedMessages int
+	queueMu             sync.Mutex
+	queue               []protocol.BridgeMessage
+	droppedMessages     int
+	lastExternalDropped int
 
 	notificationSeq atomic.Int64
 
@@ -69,7 +72,7 @@ func NewServer(opts ServerOptions) *Server {
 		opts.Version = "0.2.0"
 	}
 	if opts.DeliveryMode == "" {
-		opts.DeliveryMode = DeliveryPush
+		opts.DeliveryMode = DeliveryPull
 	}
 	if opts.MaxBufferedMessages == 0 {
 		opts.MaxBufferedMessages = 100
@@ -157,23 +160,23 @@ func (s *Server) handleInitialize(req Request) {
 }
 
 func (s *Server) respond(id json.RawMessage, result any) {
-	s.write(Response{JSONRPC: "2.0", ID: id, Result: result})
+	_ = s.write(Response{JSONRPC: "2.0", ID: id, Result: result})
 }
 
 func (s *Server) respondError(id json.RawMessage, code int, message string) {
-	s.write(Response{JSONRPC: "2.0", ID: id, Error: &ResponseError{Code: code, Message: message}})
+	_ = s.write(Response{JSONRPC: "2.0", ID: id, Error: &ResponseError{Code: code, Message: message}})
 }
 
-func (s *Server) write(v any) {
+func (s *Server) write(v any) error {
 	payload, err := json.Marshal(v)
 	if err != nil {
 		s.log("marshal: " + err.Error())
-		return
+		return err
 	}
 	s.writeMu.Lock()
 	defer s.writeMu.Unlock()
 	if s.writer == nil {
-		return
+		return nil
 	}
 	// Single write with appended newline — atomic at the OS level for
 	// payloads under PIPE_BUF (4KB on POSIX), and correct under writeMu
@@ -184,7 +187,9 @@ func (s *Server) write(v any) {
 		if s.cancelServe != nil {
 			s.cancelServe(fmt.Errorf("write to stdout: %w", err))
 		}
+		return err
 	}
+	return nil
 }
 
 func (s *Server) bindWriter(w io.Writer) []protocol.BridgeMessage {
@@ -195,6 +200,15 @@ func (s *Server) bindWriter(w io.Writer) []protocol.BridgeMessage {
 	s.preServePush = nil
 	s.readyCloseOnce.Do(func() { close(s.ready) })
 	return buffered
+}
+
+func (s *Server) chatID() string {
+	if s.opts.ChatIDProvider != nil {
+		if chatID := s.opts.ChatIDProvider(); chatID != "" {
+			return chatID
+		}
+	}
+	return s.sessionID
 }
 
 func (s *Server) log(msg string) {

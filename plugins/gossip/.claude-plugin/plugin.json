@@ -1,0 +1,11 @@
+{
+  "name": "gossip",
+  "version": "0.2.0-dev",
+  "description": "Bridge Claude Code and Codex with a shared daemon, push channel delivery, pull-mode get_messages, and a plugin-local shim that launches the installed gossip binary.",
+  "author": {
+    "name": "Gossip Contributors"
+  },
+  "homepage": "https://github.com/yigitkonur/gossip#readme",
+  "repository": "https://github.com/yigitkonur/gossip",
+  "license": "MIT"
+}

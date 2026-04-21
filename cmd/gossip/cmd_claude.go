@@ -4,33 +4,54 @@ import (
 	"context"
 	"fmt"
 	"os"
+	"strconv"
 	"strings"
 	"sync/atomic"
 	"time"
 
+	"github.com/spf13/cobra"
 	"github.com/yigitkonur/gossip/internal/config"
 	"github.com/yigitkonur/gossip/internal/control"
 	"github.com/yigitkonur/gossip/internal/daemon"
 	"github.com/yigitkonur/gossip/internal/mcp"
 	"github.com/yigitkonur/gossip/internal/protocol"
 	"github.com/yigitkonur/gossip/internal/statedir"
-	"github.com/spf13/cobra"
 )
 
-const claudeInstructions = `Codex is an AI coding agent (OpenAI) running in a separate session on the same machine.
+const (
+	claudeInstructions = `Codex is an AI coding agent (OpenAI) running in a separate session on the same machine.
 
 ## Message delivery
-Messages from Codex may arrive as <channel source="gossip" chat_id="..." user="Codex" ...> tags.
-Use the reply tool to send messages back to Codex.
-Use the get_messages tool to check for pending messages.
+Messages from Codex may arrive in two ways depending on the connection mode:
+- As <channel source="gossip" chat_id="..." user="Codex" ...> tags (push mode)
+- Via the get_messages tool (pull mode)
 
 ## Collaboration roles
+Default roles in this setup:
 - Claude: Reviewer, Planner, Hypothesis Challenger
 - Codex: Implementer, Executor, Reproducer/Verifier
+- Expect Codex to provide independent technical judgment and evidence, not passive agreement.
+
+## Thinking patterns (task-driven)
+- Analytical/review tasks: Independent Analysis & Convergence
+- Implementation tasks: Architect -> Builder -> Critic
+- Debugging tasks: Hypothesis -> Experiment -> Interpretation
+
+## Collaboration language
+- Use explicit phrases such as "My independent view is:", "I agree on:", "I disagree on:", and "Current consensus:".
+
+## How to interact
+- Use the reply tool to send messages back to Codex — pass chat_id back.
+- Use the get_messages tool to check for pending messages from Codex.
+- After sending a reply, call get_messages to check for responses.
+- When the user asks about Codex status or progress, call get_messages.
 
 ## Turn coordination
 - When you see '⏳ Codex is working', do NOT call the reply tool — wait for '✅ Codex finished'.
-- If the reply tool returns a busy error, Codex is still executing — wait and retry later.`
+- After Codex finishes a turn, you have an attention window to review and respond before new messages arrive.
+- If the reply tool returns a busy error, Codex is still executing — wait and try again later.`
+	reconnectNotifyCooldown = 30 * time.Second
+)
 
 func newClaudeCmd() *cobra.Command {
 	return &cobra.Command{
@@ -49,11 +70,27 @@ func newClaudeCmd() *cobra.Command {
 			var srv *mcp.Server
 			var bridgeDisabled atomic.Bool
 			var reconnectRunning atomic.Bool
+			var currentChatID atomic.Value
+			var currentDisabledReason atomic.Value
+			var currentDroppedCount atomic.Int64
+			var lastDisconnectNotify atomic.Int64
+			var lastReconnectNotify atomic.Int64
+			currentChatID.Store("")
+			currentDisabledReason.Store(bridgeDisabledReasonNone)
+			currentDisabled := func() bridgeDisabledReason {
+				reason, _ := currentDisabledReason.Load().(bridgeDisabledReason)
+				return reason
+			}
 			pushSystem := func(id, content string) {
 				if srv == nil {
 					return
 				}
 				srv.PushMessage(protocol.BridgeMessage{ID: fmt.Sprintf("%s_%d", id, time.Now().UnixMilli()), Source: protocol.SourceCodex, Content: content, Timestamp: time.Now().UnixMilli()})
+			}
+			enterDisabledState := func(reason bridgeDisabledReason, id, content string) {
+				bridgeDisabled.Store(true)
+				currentDisabledReason.Store(reason)
+				pushSystem(id, content)
 			}
 
 			var cc *control.Client
@@ -64,12 +101,34 @@ func newClaudeCmd() *cobra.Command {
 						srv.PushMessage(msg)
 					}
 				},
+				OnStatus: func(status control.Status) {
+					currentChatID.Store(status.ThreadID)
+					currentDroppedCount.Store(int64(status.DroppedMessageCount))
+				},
 				OnDisconnect: func(_ int, _ string, _ time.Duration) {
+					if ctx.Err() != nil || bridgeDisabled.Load() {
+						return
+					}
 					if lc.WasKilled() {
-						bridgeDisabled.Store(true)
-						pushSystem("system_bridge_disabled", "⛔ Gossip was stopped by gossip kill. Bridge is staying idle until you restart with gossip codex.")
+						enterDisabledState(bridgeDisabledReasonKilled, "system_bridge_disabled", "⛔ Gossip was stopped by `gossip kill`. Bridge is staying idle. Restart Claude Code (`gossip claude`), switch to a new conversation, or run /resume to reconnect.")
+						return
+					}
+					if shouldSendReconnectNotice(&lastDisconnectNotify, time.Now()) {
+						pushSystem("system_daemon_disconnected", "⚠️ Gossip daemon control connection lost. Attempting to reconnect...")
 					}
 				},
+				OnRejected: func(_ int, _ string, _ time.Duration) {
+					enterDisabledState(bridgeDisabledReasonRejected, "system_bridge_replaced", "⚠️ Gossip daemon rejected this session — another Claude Code session is already connected. Close the other session first, or run `gossip kill` to reset.")
+				},
+				OnReconnect: func() {
+					if ctx.Err() != nil || bridgeDisabled.Load() {
+						return
+					}
+					if shouldSendReconnectNotice(&lastReconnectNotify, time.Now()) {
+						pushSystem("system_daemon_reconnected", "✅ Gossip daemon reconnected successfully.")
+					}
+				},
+				MaxBackoff:      30 * time.Second,
 				ShouldReconnect: func() bool { return !bridgeDisabled.Load() && !lc.WasKilled() },
 				Logger:          logToStderr,
 			})
@@ -78,10 +137,18 @@ func newClaudeCmd() *cobra.Command {
 				Name:         "gossip",
 				Version:      version,
 				Instructions: claudeInstructions,
-				DeliveryMode: resolveClaudeDeliveryMode(cfg),
+				ChatIDProvider: func() string {
+					chatID, _ := currentChatID.Load().(string)
+					return chatID
+				},
+				DroppedCountProvider: func() int {
+					return int(currentDroppedCount.Load())
+				},
+				DeliveryMode:        resolveClaudeDeliveryMode(cfg, logToStderr),
+				MaxBufferedMessages: maxBufferedMessagesFromEnv(),
 				ReplyHandler: func(ctx context.Context, msg protocol.BridgeMessage, requireReply bool) mcp.ReplyResult {
 					if bridgeDisabled.Load() {
-						return mcp.ReplyResult{Success: false, Error: "Gossip is disabled by gossip kill. Restart with gossip codex to reconnect."}
+						return mcp.ReplyResult{Success: false, Error: disabledReplyError(currentDisabled())}
 					}
 					ok, errMsg := cc.SendReply(ctx, msg, requireReply)
 					return mcp.ReplyResult{Success: ok, Error: errMsg}
@@ -112,7 +179,8 @@ func newClaudeCmd() *cobra.Command {
 								continue
 							}
 							bridgeDisabled.Store(false)
-							pushSystem("system_bridge_recovered", "✅ Gossip daemon reconnected after the killed sentinel was cleared.")
+							currentDisabledReason.Store(bridgeDisabledReasonNone)
+							pushSystem("system_bridge_recovered", "✅ Gossip daemon reconnected after the disabled state cleared.")
 							startReconnect()
 						}
 					}
@@ -121,10 +189,11 @@ func newClaudeCmd() *cobra.Command {
 
 			if lc.WasKilled() {
 				bridgeDisabled.Store(true)
+				currentDisabledReason.Store(bridgeDisabledReasonKilled)
 				go func() {
 					<-srv.Ready()
 					startRecoveryPoller()
-					pushSystem("system_bridge_disabled", "⛔ Gossip was stopped by gossip kill. Bridge is staying idle until you restart with gossip codex.")
+					pushSystem("system_bridge_disabled", "⛔ Gossip was stopped by `gossip kill`. Bridge is staying idle. Restart Claude Code (`gossip claude`), switch to a new conversation, or run /resume to reconnect.")
 				}()
 				return srv.Serve(ctx, os.Stdin, os.Stdout)
 			}
@@ -145,7 +214,30 @@ func newClaudeCmd() *cobra.Command {
 	}
 }
 
-func resolveClaudeDeliveryMode(cfg config.Config) mcp.DeliveryMode {
+func shouldSendReconnectNotice(last *atomic.Int64, now time.Time) bool {
+	nowMillis := now.UnixMilli()
+	minAllowed := now.Add(-reconnectNotifyCooldown).UnixMilli()
+	for {
+		prev := last.Load()
+		if prev > minAllowed {
+			return false
+		}
+		if last.CompareAndSwap(prev, nowMillis) {
+			return true
+		}
+	}
+}
+
+func maxBufferedMessagesFromEnv() int {
+	if raw := os.Getenv("GOSSIP_MAX_BUFFERED_MESSAGES"); raw != "" {
+		if n, err := strconv.Atoi(raw); err == nil && n > 0 {
+			return n
+		}
+	}
+	return 0
+}
+
+func resolveClaudeDeliveryMode(cfg config.Config, logger func(string)) mcp.DeliveryMode {
 	if mode, ok := parseDeliveryMode(os.Getenv("GOSSIP_MODE")); ok {
 		return mode
 	}
@@ -154,7 +246,10 @@ func resolveClaudeDeliveryMode(cfg config.Config) mcp.DeliveryMode {
 			return mode
 		}
 	}
-	return mcp.DeliveryPush
+	if logger != nil {
+		logger("Delivery mode defaulting to pull")
+	}
+	return mcp.DeliveryPull
 }
 
 func parseDeliveryMode(raw string) (mcp.DeliveryMode, bool) {

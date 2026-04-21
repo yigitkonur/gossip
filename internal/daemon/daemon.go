@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"net/http"
 	"os"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -19,6 +20,19 @@ import (
 	"github.com/yigitkonur/gossip/internal/statedir"
 	"github.com/yigitkonur/gossip/internal/tui"
 )
+
+const (
+	attachStatusCooldown = 30 * time.Second
+	codexStopTimeout     = 3 * time.Second
+	turnStartedMessage   = "⏳ Codex is working on the current task. Wait for completion before sending a reply."
+	replyMissingMessage  = "⚠️ Codex completed the turn without sending a reply (require_reply was set). Codex may not have generated an agentMessage. You may want to retry or rephrase."
+	claudeOnlineMessage  = "✅ Gossip connected to Claude Code."
+)
+
+type messageTemplates struct {
+	ready   string
+	waiting string
+}
 
 type stopTimer interface {
 	Stop() bool
@@ -41,13 +55,14 @@ func defaultAfterFunc(d time.Duration, fn func()) stopTimer {
 
 // Options configures a daemon run.
 type Options struct {
-	StateDir     *statedir.StateDir
-	AppPort      int
-	ProxyPort    int
-	ControlPort  int
-	FilterMode   filter.Mode
-	IdleShutdown time.Duration
-	Logger       func(msg string)
+	StateDir        *statedir.StateDir
+	AppPort         int
+	ProxyPort       int
+	ControlPort     int
+	FilterMode      filter.Mode
+	AttentionWindow time.Duration
+	IdleShutdown    time.Duration
+	Logger          func(msg string)
 }
 
 // Daemon bundles the supervisor state.
@@ -67,11 +82,16 @@ type Daemon struct {
 	claudeAttached           bool
 	idleShutdownTimer        stopTimer
 	claudeDisconnectTimer    stopTimer
+	attentionWindowTimer     stopTimer
+	attentionWindowActive    bool
+	attentionWindowConnID    int64
 	claudeOnlineNoticeSent   bool
 	claudeOfflineNoticeShown bool
+	lastAttachStatusSent     time.Time
 	runCancel                context.CancelFunc
 	replyRequired            bool
 	replyReceivedDuringTurn  bool
+	messageTemplates         messageTemplates
 	bridgeReadyAt            atomic.Int64
 }
 
@@ -89,10 +109,17 @@ func New(opts Options) *Daemon {
 	if opts.FilterMode == "" {
 		opts.FilterMode = filter.ModeFiltered
 	}
+	if opts.AttentionWindow == 0 {
+		opts.AttentionWindow = 15 * time.Second
+	}
 	if opts.IdleShutdown == 0 {
 		opts.IdleShutdown = 30 * time.Second
 	}
 	d := &Daemon{opts: opts, filter: opts.FilterMode, afterFunc: defaultAfterFunc}
+	d.messageTemplates = messageTemplates{
+		ready:   "✅ Codex TUI connected ({thread_id}). Bridge ready.",
+		waiting: fmt.Sprintf("⏳ Waiting for Codex TUI to connect. Run in another terminal:\ncodex --enable tui_app_server --remote ws://127.0.0.1:%d", opts.ProxyPort),
+	}
 	d.tuiState = tui.NewState(tui.Options{
 		DisconnectGrace: 2500 * time.Millisecond,
 		Logger:          opts.Logger,
@@ -113,6 +140,49 @@ func New(opts Options) *Daemon {
 	return d
 }
 
+// SetReadyMessageTemplate overrides the ready notification template.
+func (d *Daemon) SetReadyMessageTemplate(template string) {
+	d.stateMu.Lock()
+	defer d.stateMu.Unlock()
+	d.messageTemplates.ready = template
+}
+
+// SetWaitingMessageTemplate overrides the waiting notification template.
+func (d *Daemon) SetWaitingMessageTemplate(template string) {
+	d.stateMu.Lock()
+	defer d.stateMu.Unlock()
+	d.messageTemplates.waiting = template
+}
+
+func (d *Daemon) currentReadyMessage(threadID string) string {
+	d.stateMu.Lock()
+	template := d.messageTemplates.ready
+	d.stateMu.Unlock()
+	return strings.ReplaceAll(template, "{thread_id}", threadID)
+}
+
+func (d *Daemon) currentWaitingMessage() string {
+	d.stateMu.Lock()
+	template := d.messageTemplates.waiting
+	d.stateMu.Unlock()
+	return strings.ReplaceAll(template, "{thread_id}", d.threadID())
+}
+
+func (d *Daemon) threadID() string {
+	if d.codex == nil {
+		return ""
+	}
+	return d.codex.ActiveThreadID()
+}
+
+func (d *Daemon) shouldEmitAttachStatus(now time.Time, queuedCount int) bool {
+	d.stateMu.Lock()
+	rapidReattach := !d.lastAttachStatusSent.IsZero() && now.Sub(d.lastAttachStatusSent) < attachStatusCooldown
+	d.lastAttachStatusSent = now
+	d.stateMu.Unlock()
+	return queuedCount == 0 && !rapidReattach
+}
+
 // Run blocks until ctx is cancelled, running all layers under an errgroup.
 func (d *Daemon) Run(ctx context.Context) error {
 	runCtx, runCancel := context.WithCancel(ctx)
@@ -128,7 +198,9 @@ func (d *Daemon) Run(ctx context.Context) error {
 		return fmt.Errorf("codex start: %w", err)
 	}
 	d.writeStatusFile()
+	d.writePortsFile()
 	defer d.removeStatusFile()
+	defer d.removePortsFile()
 
 	d.proxy.OnTUIConnected = func(id int64) {
 		d.tuiState.HandleTUIConnected(id)
@@ -191,8 +263,11 @@ func (d *Daemon) Run(ctx context.Context) error {
 	g.Go(func() error { return d.pumpCodexEvents(gctx) })
 
 	err := g.Wait()
+	d.clearAttentionWindow("daemon stopped")
 	d.cancelIdleShutdown()
-	_ = d.codex.Stop(context.Background())
+	stopCtx, stopCancel := context.WithTimeout(context.Background(), codexStopTimeout)
+	defer stopCancel()
+	_ = d.codex.Stop(stopCtx)
 	return err
 }
 
@@ -215,9 +290,9 @@ func (d *Daemon) handleCodexEvent(ctx context.Context, ev codex.Event) {
 	case codex.EventThreadReady:
 		d.tuiState.MarkBridgeReady()
 		d.bridgeReadyAt.Store(time.Now().UnixMilli())
-		d.broadcastSystem(ctx, "system_ready", "✅ Codex bridge ready (thread "+ev.ThreadID+")")
+		d.broadcastSystem(ctx, "system_ready", d.currentReadyMessage(ev.ThreadID))
 	case codex.EventTurnStarted:
-		d.broadcastSystem(ctx, "system_turn_started", "⏳ Codex is working on the current task.")
+		d.broadcastSystem(ctx, "system_turn_started", turnStartedMessage)
 	case codex.EventTurnCompleted:
 		d.statusBuf.Flush("turn completed")
 		d.stateMu.Lock()
@@ -227,9 +302,10 @@ func (d *Daemon) handleCodexEvent(ctx context.Context, ev codex.Event) {
 		d.replyReceivedDuringTurn = false
 		d.stateMu.Unlock()
 		if replyRequired && !replyReceived {
-			d.broadcastSystem(ctx, "system_reply_missing", "⚠️ Codex completed the turn without sending a reply while require_reply was set.")
+			d.broadcastSystem(ctx, "system_reply_missing", replyMissingMessage)
 		}
 		d.broadcastSystem(ctx, "system_turn_completed", "✅ Codex finished the current turn. You can reply now if needed.")
+		d.startAttentionWindow(0)
 	case codex.EventAgentMessage:
 		msg, ok := ev.MessageToBridge()
 		if !ok {
@@ -244,12 +320,18 @@ func (d *Daemon) handleCodexEvent(ctx context.Context, ev codex.Event) {
 		if replyRequired {
 			d.statusBuf.Flush("reply-required message arrived")
 			d.control.Broadcast(ctx, msg)
+			if marker, _ := filter.ParseMarker(msg.Content); marker == filter.MarkerImportant {
+				d.startAttentionWindow(0)
+			}
 			return
 		}
 		result := filter.Classify(msg.Content, d.filter)
 		switch result.Action {
 		case filter.ActionForward:
 			d.control.Broadcast(ctx, msg)
+			if result.Marker == filter.MarkerImportant {
+				d.startAttentionWindow(0)
+			}
 		case filter.ActionBuffer:
 			d.statusBuf.Add(msg)
 		case filter.ActionDrop:
@@ -260,8 +342,19 @@ func (d *Daemon) handleCodexEvent(ctx context.Context, ev codex.Event) {
 		}
 	case codex.EventProcessExit:
 		d.tuiState.HandleCodexExit()
-		d.broadcastSystem(ctx, "system_codex_exit", "⚠️ Codex app-server exited. Gossip daemon is still running, but Codex needs to be restarted.")
+		d.broadcastSystem(ctx, "system_codex_exit", formatCodexExitMessage(ev.ExitCode))
+		d.stateMu.Lock()
+		d.claudeOnlineNoticeSent = false
+		d.claudeOfflineNoticeShown = false
+		d.stateMu.Unlock()
 	}
+}
+
+func formatCodexExitMessage(code *int) string {
+	if code == nil {
+		return "⚠️ Codex app-server exited (code unknown). Gossip daemon is still running, but the Codex side needs to be restarted."
+	}
+	return fmt.Sprintf("⚠️ Codex app-server exited (code %d). Gossip daemon is still running, but the Codex side needs to be restarted.", *code)
 }
 
 func (d *Daemon) scheduleIdleShutdown() {
@@ -360,9 +453,23 @@ func (d *Daemon) writeStatusFile() {
 	_ = os.WriteFile(d.opts.StateDir.StatusFile(), []byte(payload), 0o644)
 }
 
+func (d *Daemon) writePortsFile() {
+	if d.opts.StateDir == nil {
+		return
+	}
+	payload := fmt.Sprintf("{\n  \"controlPort\": %d,\n  \"appPort\": %d,\n  \"proxyPort\": %d\n}\n", d.opts.ControlPort, d.opts.AppPort, d.opts.ProxyPort)
+	_ = os.WriteFile(d.opts.StateDir.PortsFile(), []byte(payload), 0o644)
+}
+
 func (d *Daemon) removeStatusFile() {
 	if d.opts.StateDir != nil {
 		_ = os.Remove(d.opts.StateDir.StatusFile())
+	}
+}
+
+func (d *Daemon) removePortsFile() {
+	if d.opts.StateDir != nil {
+		_ = os.Remove(d.opts.StateDir.PortsFile())
 	}
 }
 
@@ -371,6 +478,12 @@ func (d *Daemon) onStatusFlush(summary protocol.BridgeMessage) {
 }
 
 func (d *Daemon) broadcastSystem(ctx context.Context, id, content string) {
+	if d.control == nil {
+		if d.opts.Logger != nil {
+			d.opts.Logger("control server unavailable; skipping system broadcast: " + id)
+		}
+		return
+	}
 	d.control.Broadcast(ctx, protocol.BridgeMessage{ID: fmt.Sprintf("%s_%d", id, time.Now().UnixMilli()), Source: protocol.SourceCodex, Content: content, Timestamp: time.Now().UnixMilli()})
 }
 
@@ -384,19 +497,32 @@ func (d *Daemon) OnClaudeConnect() {
 	if d.statusBuf != nil {
 		d.statusBuf.Flush("claude reconnected")
 	}
+	queuedCount := 0
+	if d.control != nil {
+		queuedCount = d.control.QueuedCount()
+	}
+	shouldEmitAttachStatus := d.shouldEmitAttachStatus(time.Now(), queuedCount)
 	d.stateMu.Lock()
 	needNotify := d.tuiState.CanReply() && (!d.claudeOnlineNoticeSent || d.claudeOfflineNoticeShown) && d.codex != nil
 	codexClient := d.codex
+	threadID := d.threadID()
 	d.stateMu.Unlock()
+	if shouldEmitAttachStatus {
+		if d.tuiState.CanReply() {
+			d.broadcastSystem(context.Background(), "system_ready", d.currentReadyMessage(threadID))
+		} else {
+			d.broadcastSystem(context.Background(), "system_waiting", d.currentWaitingMessage())
+		}
+	}
 	if needNotify {
-		_, _ = codexClient.InjectMessage(context.Background(), "✅ Claude Code is online, bridge restored. Bidirectional communication can continue.")
+		_, _ = codexClient.InjectMessage(context.Background(), claudeOnlineMessage)
 		d.stateMu.Lock()
 		d.claudeOnlineNoticeSent = true
 		d.claudeOfflineNoticeShown = false
 		d.stateMu.Unlock()
 	}
 	if d.opts.Logger != nil {
-		d.opts.Logger("claude frontend attached")
+		d.opts.Logger("Claude attached")
 	}
 }
 
@@ -423,7 +549,11 @@ func (d *Daemon) OnClaudeToCodex(ctx context.Context, msg protocol.BridgeMessage
 		d.replyReceivedDuringTurn = false
 		d.stateMu.Unlock()
 	}
-	return d.codex.InjectMessage(ctx, body)
+	ok, errMsg := d.codex.InjectMessage(ctx, body)
+	if ok {
+		d.clearAttentionWindow("claude replied")
+	}
+	return ok, errMsg
 }
 
 func (d *Daemon) Snapshot() control.Status {
@@ -431,24 +561,70 @@ func (d *Daemon) Snapshot() control.Status {
 	if d.proxy != nil {
 		tuiConnected = d.proxy.ConnectionCount() > 0
 	}
-	threadID := ""
-	if d.codex != nil {
-		threadID = d.codex.ActiveThreadID()
-	}
+	threadID := d.threadID()
 	queued := 0
 	if d.statusBuf != nil {
 		queued += d.statusBuf.Size()
 	}
+	dropped := 0
 	if d.control != nil {
 		queued += d.control.QueuedCount()
+		dropped = d.control.DroppedCount()
 	}
 	return control.Status{
-		BridgeReady:        d.tuiState.CanReply(),
-		TuiConnected:       tuiConnected,
-		ThreadID:           threadID,
-		QueuedMessageCount: queued,
-		ProxyURL:           fmt.Sprintf("ws://127.0.0.1:%d", d.opts.ProxyPort),
-		AppServerURL:       fmt.Sprintf("ws://127.0.0.1:%d", d.opts.AppPort),
-		Pid:                os.Getpid(),
+		BridgeReady:         d.tuiState.CanReply(),
+		TuiConnected:        tuiConnected,
+		ThreadID:            threadID,
+		QueuedMessageCount:  queued,
+		DroppedMessageCount: dropped,
+		ProxyURL:            fmt.Sprintf("ws://127.0.0.1:%d", d.opts.ProxyPort),
+		AppServerURL:        fmt.Sprintf("ws://127.0.0.1:%d", d.opts.AppPort),
+		Pid:                 os.Getpid(),
+	}
+}
+
+func (d *Daemon) startAttentionWindow(connID int64) {
+	d.stateMu.Lock()
+	if d.statusBuf == nil {
+		d.stateMu.Unlock()
+		return
+	}
+	if d.attentionWindowTimer != nil {
+		d.attentionWindowTimer.Stop()
+		d.attentionWindowTimer = nil
+	}
+	d.attentionWindowActive = true
+	d.attentionWindowConnID = connID
+	statusBuf := d.statusBuf
+	var timer stopTimer
+	timer = d.afterFunc(d.opts.AttentionWindow, func() {
+		d.clearAttentionWindow("expired")
+	})
+	d.attentionWindowTimer = timer
+	d.stateMu.Unlock()
+	statusBuf.Pause()
+	if d.opts.Logger != nil {
+		d.opts.Logger(fmt.Sprintf("attention window started (%dms, conn=%d)", d.opts.AttentionWindow.Milliseconds(), connID))
+	}
+}
+
+func (d *Daemon) clearAttentionWindow(reason string) {
+	d.stateMu.Lock()
+	active := d.attentionWindowActive
+	timer := d.attentionWindowTimer
+	connID := d.attentionWindowConnID
+	statusBuf := d.statusBuf
+	d.attentionWindowActive = false
+	d.attentionWindowConnID = 0
+	d.attentionWindowTimer = nil
+	d.stateMu.Unlock()
+	if timer != nil {
+		timer.Stop()
+	}
+	if active && statusBuf != nil {
+		statusBuf.Resume()
+		if d.opts.Logger != nil {
+			d.opts.Logger(fmt.Sprintf("attention window cleared (%s, conn=%d)", reason, connID))
+		}
 	}
 }

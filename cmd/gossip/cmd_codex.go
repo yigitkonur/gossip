@@ -3,16 +3,26 @@ package main
 import (
 	"context"
 	"fmt"
+	"net/http"
+	"net/url"
 	"os"
 	"os/exec"
+	"os/signal"
 	"strings"
+	"sync"
+	"syscall"
 	"time"
 
-	"github.com/coder/websocket"
+	"github.com/spf13/cobra"
 	"github.com/yigitkonur/gossip/internal/config"
 	"github.com/yigitkonur/gossip/internal/daemon"
 	"github.com/yigitkonur/gossip/internal/statedir"
-	"github.com/spf13/cobra"
+)
+
+var (
+	codexSignalNotifyContext = signal.NotifyContext
+	captureTerminalState     = captureTerminalStateWithStty
+	restoreTerminalState     = restoreTerminalStateWithStty
 )
 
 type codexArgsResult struct {
@@ -26,60 +36,134 @@ func newCodexCmd() *cobra.Command {
 		Short:              "Ensure the daemon is running, then launch Codex TUI connected to the proxy",
 		DisableFlagParsing: true,
 		RunE: func(cmd *cobra.Command, args []string) error {
-			normalized, err := normalizeCodexArgs(args)
-			if err != nil {
-				return err
-			}
-			if normalized.ShowHelp {
-				return cmd.Help()
-			}
+			return withTerminalStateGuard(func() error {
+				normalized, err := normalizeCodexArgs(args)
+				if err != nil {
+					return err
+				}
+				if normalized.ShowHelp {
+					return cmd.Help()
+				}
 
-			sd := statedir.New("")
-			if err := sd.Ensure(); err != nil {
+				sd := statedir.New("")
+				if err := sd.Ensure(); err != nil {
+					return err
+				}
+				cfg := config.NewService("").LoadOrDefault()
+				lc := daemon.NewLifecycle(daemon.LifecycleOptions{StateDir: sd, ControlPort: controlPort(), Logger: logToStderr})
+				lc.ClearKilled()
+				if err := lc.EnsureRunning(cmd.Context()); err != nil {
+					return err
+				}
+				proxyURL := fmt.Sprintf("ws://127.0.0.1:%d", cfg.Daemon.ProxyPort)
+				if status, ok := readDaemonStatus(sd.StatusFile()); ok && status.ProxyURL != "" {
+					proxyURL = status.ProxyURL
+				}
+				if err := waitForProxyReady(cmd.Context(), proxyURL); err != nil {
+					return err
+				}
+				fmt.Println("daemon ready. launching codex TUI with --remote", proxyURL)
+				codexArgs := append([]string{"--enable", "tui_app_server", "--remote", proxyURL}, normalized.Args...)
+				tui := exec.Command("codex", codexArgs...)
+				tui.Stdin = os.Stdin
+				tui.Stdout = os.Stdout
+				tui.Stderr = os.Stderr
+				if err := tui.Start(); err != nil {
+					return err
+				}
+				_ = os.WriteFile(sd.TuiPidFile(), []byte(fmt.Sprintf("%d\n", tui.Process.Pid)), 0o644)
+				err = tui.Wait()
+				_ = os.Remove(sd.TuiPidFile())
 				return err
-			}
-			cfg := config.NewService("").LoadOrDefault()
-			lc := daemon.NewLifecycle(daemon.LifecycleOptions{StateDir: sd, ControlPort: controlPort(), Logger: logToStderr})
-			lc.ClearKilled()
-			if err := lc.EnsureRunning(cmd.Context()); err != nil {
-				return err
-			}
-			proxyURL := fmt.Sprintf("ws://127.0.0.1:%d", cfg.Daemon.ProxyPort)
-			if status, ok := readDaemonStatus(sd.StatusFile()); ok && status.ProxyURL != "" {
-				proxyURL = status.ProxyURL
-			}
-			if err := waitForProxyReady(cmd.Context(), proxyURL); err != nil {
-				return err
-			}
-			fmt.Println("daemon ready. launching codex TUI with --remote", proxyURL)
-			codexArgs := append([]string{"--enable", "tui_app_server", "--remote", proxyURL}, normalized.Args...)
-			tui := exec.Command("codex", codexArgs...)
-			tui.Stdin = os.Stdin
-			tui.Stdout = os.Stdout
-			tui.Stderr = os.Stderr
-			if err := tui.Start(); err != nil {
-				return err
-			}
-			_ = os.WriteFile(sd.TuiPidFile(), []byte(fmt.Sprintf("%d\n", tui.Process.Pid)), 0o644)
-			err = tui.Wait()
-			_ = os.Remove(sd.TuiPidFile())
-			return err
+			})
 		},
 	}
 }
 
+func withTerminalStateGuard(run func() error) error {
+	state, err := captureTerminalState()
+	if err != nil || state == "" {
+		return run()
+	}
+	signalCtx, stopSignals := codexSignalNotifyContext(context.Background(), os.Interrupt, syscall.SIGINT, syscall.SIGTERM)
+	defer stopSignals()
+
+	var once sync.Once
+	var restoreErr error
+	restore := func() {
+		once.Do(func() {
+			restoreErr = restoreTerminalState(state)
+		})
+	}
+	finished := make(chan struct{})
+	go func() {
+		select {
+		case <-signalCtx.Done():
+			restore()
+		case <-finished:
+		}
+	}()
+
+	runErr := run()
+	close(finished)
+	restore()
+	if runErr != nil {
+		return runErr
+	}
+	return restoreErr
+}
+
+func captureTerminalStateWithStty() (string, error) {
+	info, err := os.Stdin.Stat()
+	if err != nil {
+		return "", err
+	}
+	if info.Mode()&os.ModeCharDevice == 0 {
+		return "", nil
+	}
+	cmd := exec.Command("stty", "-g")
+	cmd.Stdin = os.Stdin
+	out, err := cmd.Output()
+	if err != nil {
+		return "", err
+	}
+	return strings.TrimSpace(string(out)), nil
+}
+
+func restoreTerminalStateWithStty(state string) error {
+	if strings.TrimSpace(state) == "" {
+		return nil
+	}
+	cmd := exec.Command("stty", state)
+	cmd.Stdin = os.Stdin
+	cmd.Stdout = os.Stderr
+	cmd.Stderr = os.Stderr
+	return cmd.Run()
+}
+
 func waitForProxyReady(ctx context.Context, proxyURL string) error {
-	deadline := time.Now().Add(10 * time.Second)
-	for {
-		dialCtx, cancel := context.WithTimeout(ctx, time.Second)
-		conn, _, err := websocket.Dial(dialCtx, proxyURL, nil)
+	healthURL, err := proxyHealthURL(proxyURL)
+	if err != nil {
+		return err
+	}
+	var lastErr error
+	for attempt := 0; attempt < 40; attempt++ {
+		reqCtx, cancel := context.WithTimeout(ctx, time.Second)
+		req, err := http.NewRequestWithContext(reqCtx, http.MethodGet, healthURL, nil)
+		if err != nil {
+			cancel()
+			return err
+		}
+		resp, err := http.DefaultClient.Do(req)
 		cancel()
 		if err == nil {
-			_ = conn.Close(websocket.StatusNormalClosure, "")
-			return nil
-		}
-		if time.Now().After(deadline) {
-			return err
+			resp.Body.Close()
+			if resp.StatusCode == http.StatusOK {
+				return nil
+			}
+			lastErr = fmt.Errorf("proxy health check returned %s", resp.Status)
+		} else {
+			lastErr = err
 		}
 		select {
 		case <-ctx.Done():
@@ -87,6 +171,26 @@ func waitForProxyReady(ctx context.Context, proxyURL string) error {
 		case <-time.After(250 * time.Millisecond):
 		}
 	}
+	return lastErr
+}
+
+func proxyHealthURL(proxyURL string) (string, error) {
+	parsed, err := url.Parse(proxyURL)
+	if err != nil {
+		return "", err
+	}
+	switch parsed.Scheme {
+	case "ws":
+		parsed.Scheme = "http"
+	case "wss":
+		parsed.Scheme = "https"
+	default:
+		return "", fmt.Errorf("unsupported proxy scheme %q", parsed.Scheme)
+	}
+	parsed.Path = "/healthz"
+	parsed.RawQuery = ""
+	parsed.Fragment = ""
+	return parsed.String(), nil
 }
 
 func logToStderr(msg string) { fmt.Fprintln(os.Stderr, msg) }

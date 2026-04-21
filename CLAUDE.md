@@ -24,6 +24,14 @@
   - `go build ./...`
   - `make check`
 
+## Config schema
+
+- Gossip still stores project config at `.gossip/config.json`.
+- The Go runtime accepts both the current Go-shape keys (`daemon.port`, `daemon.proxyPort`, `agents.claude.mode`) and TS-shape compatibility keys (`codex.appPort`, `codex.proxyPort`, `claude.mode`).
+- Resolution precedence is: TS-shape key first, then Go-shape alias, then built-in defaults.
+- `turnCoordination.attentionWindowSeconds` and `idleShutdownSeconds` keep their existing names and still fall back to built-in defaults when omitted.
+- Gossip saves config back in the Go runtime shape today; compatibility support is read-time normalization.
+
 ## Progress notes
 
 - Keep local scratch notes out of git.

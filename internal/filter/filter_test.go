@@ -1,6 +1,7 @@
 package filter
 
 import (
+	"strings"
 	"testing"
 	"time"
 
@@ -32,6 +33,90 @@ func TestClassify_Markers(t *testing.T) {
 	}
 }
 
+func TestParseMarker_ParityEdgeCases(t *testing.T) {
+	cases := []struct {
+		name       string
+		input      string
+		wantMarker MarkerLevel
+		wantBody   string
+		wantAction Action
+	}{
+		{
+			name:       "important",
+			input:      "[IMPORTANT] ship it",
+			wantMarker: MarkerImportant,
+			wantBody:   "ship it",
+			wantAction: ActionForward,
+		},
+		{
+			name:       "spaced status stays untagged",
+			input:      "[ STATUS ] compiling",
+			wantMarker: MarkerUntagged,
+			wantBody:   "[ STATUS ] compiling",
+			wantAction: ActionForward,
+		},
+		{
+			name:       "lowercase fyi",
+			input:      "[fyi] note",
+			wantMarker: MarkerFYI,
+			wantBody:   "note",
+			wantAction: ActionDrop,
+		},
+		{
+			name:       "untagged",
+			input:      "plain text",
+			wantMarker: MarkerUntagged,
+			wantBody:   "plain text",
+			wantAction: ActionForward,
+		},
+		{
+			name:       "empty",
+			input:      "",
+			wantMarker: MarkerUntagged,
+			wantBody:   "",
+			wantAction: ActionForward,
+		},
+		{
+			name:       "whitespace only",
+			input:      "   \n\t",
+			wantMarker: MarkerUntagged,
+			wantBody:   "   \n\t",
+			wantAction: ActionForward,
+		},
+	}
+
+	for _, tt := range cases {
+		t.Run(tt.name, func(t *testing.T) {
+			marker, body := ParseMarker(tt.input)
+			if marker != tt.wantMarker || body != tt.wantBody {
+				t.Fatalf("ParseMarker(%q) = (%q, %q), want (%q, %q)", tt.input, marker, body, tt.wantMarker, tt.wantBody)
+			}
+			if got := Classify(tt.input, ModeFiltered); got.Action != tt.wantAction || got.Marker != tt.wantMarker {
+				t.Fatalf("Classify(%q) = %+v, want action=%q marker=%q", tt.input, got, tt.wantAction, tt.wantMarker)
+			}
+		})
+	}
+}
+
+func TestBridgeContractReminderIncludesSentinels(t *testing.T) {
+	for _, needle := range []string{
+		"[Git Operations — FORBIDDEN]",
+		"Architect -> Builder -> Critic",
+		"Hypothesis -> Experiment -> Interpretation",
+		"My independent view is:",
+	} {
+		if !strings.Contains(BridgeContractReminder, needle) {
+			t.Fatalf("BridgeContractReminder missing %q", needle)
+		}
+	}
+	if strings.Contains(BridgeContractReminder, "Architect→Builder→Critic") {
+		t.Fatalf("BridgeContractReminder should use TS ASCII arrows: %q", BridgeContractReminder)
+	}
+	if !strings.Contains(ReplyRequiredInstruction, "This is a mandatory requirement") {
+		t.Fatalf("ReplyRequiredInstruction missing mandatory-reply guidance: %q", ReplyRequiredInstruction)
+	}
+}
+
 func TestStatusBuffer_FlushesOnThreshold(t *testing.T) {
 	var gotSummary protocol.BridgeMessage
 	b := NewStatusBuffer(func(m protocol.BridgeMessage) { gotSummary = m }, StatusBufferOptions{FlushThreshold: 3, FlushTimeout: time.Hour})
@@ -43,5 +128,32 @@ func TestStatusBuffer_FlushesOnThreshold(t *testing.T) {
 	}
 	if b.Size() != 0 {
 		t.Errorf("queue should be empty after flush")
+	}
+}
+
+func TestStatusBuffer_ResumeFlushesThresholdReachedWhilePaused(t *testing.T) {
+	flushed := make(chan protocol.BridgeMessage, 1)
+	b := NewStatusBuffer(func(m protocol.BridgeMessage) { flushed <- m }, StatusBufferOptions{FlushThreshold: 3, FlushTimeout: time.Hour})
+
+	b.Pause()
+	for i := 0; i < 3; i++ {
+		b.Add(protocol.BridgeMessage{Content: "[STATUS] tick", Source: protocol.SourceCodex})
+	}
+
+	select {
+	case msg := <-flushed:
+		t.Fatalf("flush should stay paused, got %q", msg.Content)
+	default:
+	}
+
+	b.Resume()
+
+	select {
+	case msg := <-flushed:
+		if msg.Content == "" {
+			t.Fatal("expected resumed flush content")
+		}
+	case <-time.After(time.Second):
+		t.Fatal("timed out waiting for resumed flush")
 	}
 }

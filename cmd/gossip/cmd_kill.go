@@ -9,10 +9,22 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/spf13/cobra"
 	"github.com/yigitkonur/gossip/internal/daemon"
 	"github.com/yigitkonur/gossip/internal/statedir"
-	"github.com/spf13/cobra"
 )
+
+type daemonKillLifecycle interface {
+	WriteKilled() error
+	Kill(gracefulTimeout time.Duration) (bool, error)
+}
+
+func writeKilledAndStopDaemon(lc daemonKillLifecycle, gracefulTimeout time.Duration) (bool, error) {
+	if err := lc.WriteKilled(); err != nil {
+		return false, err
+	}
+	return lc.Kill(gracefulTimeout)
+}
 
 func newKillCmd() *cobra.Command {
 	return &cobra.Command{
@@ -21,10 +33,7 @@ func newKillCmd() *cobra.Command {
 		RunE: func(cmd *cobra.Command, args []string) error {
 			sd := statedir.New("")
 			_ = sd.Ensure()
-			lc := daemon.NewLifecycle(daemon.LifecycleOptions{StateDir: sd, ControlPort: controlPort()})
-			if err := lc.WriteKilled(); err != nil {
-				return err
-			}
+			lc := daemon.NewLifecycle(daemon.LifecycleOptions{StateDir: sd, ControlPort: resolvedControlPort(sd)})
 			if b, err := os.ReadFile(sd.TuiPidFile()); err == nil {
 				if pid, err := strconv.Atoi(strings.TrimSpace(string(b))); err == nil && daemon.IsProcessAlive(pid) && isManagedCodexProcess(pid) {
 					_ = syscall.Kill(pid, syscall.SIGTERM)
@@ -41,7 +50,7 @@ func newKillCmd() *cobra.Command {
 				}
 				_ = os.Remove(sd.TuiPidFile())
 			}
-			killed, err := lc.Kill(3 * time.Second)
+			killed, err := writeKilledAndStopDaemon(lc, 3*time.Second)
 			if err != nil {
 				return err
 			}

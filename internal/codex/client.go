@@ -31,8 +31,10 @@ type Client struct {
 	rpc    *jsonrpc.Client
 	proxy  *Proxy
 
-	threadID       atomic.Value
-	turnInProgress atomic.Bool
+	threadID          atomic.Value
+	initializeResult  atomic.Value // json.RawMessage — cached for proxy-level reply to duplicate TUI initializes
+	threadStartResult atomic.Value // json.RawMessage — cached for proxy-level reply to duplicate TUI thread/start
+	turnInProgress    atomic.Bool
 
 	agentMessageMu   sync.Mutex
 	agentMessageBufs map[string]*strings.Builder
@@ -134,6 +136,10 @@ func (c *Client) watchProcessExit() {
 	}
 	<-done
 	threadID := c.ActiveThreadID()
+	var exitCode *int
+	if code, ok := c.proc.ExitCode(); ok {
+		exitCode = &code
+	}
 	if c.dialer != nil {
 		_ = c.dialer.Close()
 	}
@@ -145,7 +151,7 @@ func (c *Client) watchProcessExit() {
 	c.agentMessageBufs = make(map[string]*strings.Builder)
 	c.agentMessageMu.Unlock()
 	c.turnInProgress.Store(false)
-	c.emit(Event{Kind: EventProcessExit, ThreadID: threadID})
+	c.emit(Event{Kind: EventProcessExit, ThreadID: threadID, ExitCode: exitCode})
 }
 
 func (c *Client) Stop(ctx context.Context) error {
@@ -191,8 +197,23 @@ func (c *Client) initialize(ctx context.Context) error {
 	}
 	callCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
 	defer cancel()
-	_, err := c.rpc.Call(callCtx, protocol.MethodInitialize, params)
-	return err
+	result, err := c.rpc.Call(callCtx, protocol.MethodInitialize, params)
+	if err != nil {
+		return err
+	}
+	if len(result) > 0 {
+		c.initializeResult.Store(append(json.RawMessage(nil), result...))
+	}
+	return nil
+}
+
+// InitializeResult returns the cached initialize response result from the upstream
+// app-server, or nil if the call has not completed yet. The proxy uses it to reply
+// to duplicate TUI initialize requests so secondary TUI sessions don't see the
+// upstream's "Already initialized" error.
+func (c *Client) InitializeResult() json.RawMessage {
+	v, _ := c.initializeResult.Load().(json.RawMessage)
+	return v
 }
 
 func (c *Client) startThread(ctx context.Context) error {
@@ -209,9 +230,21 @@ func (c *Client) startThread(ctx context.Context) error {
 	if resp.Thread.ID == "" {
 		return errors.New("codex thread/start returned no thread id")
 	}
+	if len(result) > 0 {
+		c.threadStartResult.Store(append(json.RawMessage(nil), result...))
+	}
 	c.threadID.Store(resp.Thread.ID)
 	c.emit(Event{Kind: EventThreadReady, ThreadID: resp.Thread.ID})
 	return nil
+}
+
+// ThreadStartResult returns the cached thread/start response result from the upstream
+// app-server, or nil if the call has not completed yet. The proxy uses it to reply
+// to duplicate TUI thread/start requests so TUI bootstrap doesn't see the
+// upstream's "thread already started" error.
+func (c *Client) ThreadStartResult() json.RawMessage {
+	v, _ := c.threadStartResult.Load().(json.RawMessage)
+	return v
 }
 
 func (c *Client) handleIncoming(payload []byte) {
