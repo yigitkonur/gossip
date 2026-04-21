@@ -1,5 +1,5 @@
 .PHONY: build test vet lint tidy clean gen check \
-        release release-all release-darwin release-linux release-windows \
+        release release-all release-darwin release-linux \
         checksums
 
 BINARY  := bin/gossip
@@ -36,41 +36,34 @@ check: vet test build
 
 # ---------- release / cross-compile ----------
 
-# release-binary OS ARCH EXT
+# release-binary OS ARCH
 define release-binary
 	@mkdir -p $(DIST)/gossip_$(1)_$(2)
 	@echo "→ building $(1)/$(2)"
 	GOOS=$(1) GOARCH=$(2) CGO_ENABLED=0 go build $(GOFLAGS) \
-		-o $(DIST)/gossip_$(1)_$(2)/gossip$(3) ./cmd/gossip
+		-o $(DIST)/gossip_$(1)_$(2)/gossip ./cmd/gossip
 	@cp README.md LICENSE $(DIST)/gossip_$(1)_$(2)/ 2>/dev/null || true
-	@if [ "$(3)" = ".exe" ]; then \
-	  (cd $(DIST) && zip -q -r gossip_$(VERSION:v%=%)_$(1)_$(2).zip gossip_$(1)_$(2)); \
-	else \
-	  tar -czf $(DIST)/gossip_$(VERSION:v%=%)_$(1)_$(2).tar.gz -C $(DIST) gossip_$(1)_$(2); \
-	fi
+	tar -czf $(DIST)/gossip_$(VERSION:v%=%)_$(1)_$(2).tar.gz -C $(DIST) gossip_$(1)_$(2)
 endef
 
 release-darwin:
-	$(call release-binary,darwin,arm64,)
-	$(call release-binary,darwin,amd64,)
+	$(call release-binary,darwin,arm64)
+	$(call release-binary,darwin,amd64)
 
 release-linux:
-	$(call release-binary,linux,amd64,)
-	$(call release-binary,linux,arm64,)
+	$(call release-binary,linux,amd64)
+	$(call release-binary,linux,arm64)
 
-release-windows:
-	$(call release-binary,windows,amd64,.exe)
-
-release-all: release-darwin release-linux release-windows checksums
+release-all: release-darwin release-linux checksums
 	@echo ""
 	@echo "→ artifacts in $(DIST)/"
-	@ls -1 $(DIST) | grep -E '\.(tar\.gz|zip)$$' | sed 's/^/    /'
+	@ls -1 $(DIST) | grep -E '\.tar\.gz$$' | sed 's/^/    /'
 
 release: release-all
 
 checksums:
 	@cd $(DIST) && \
-	  (command -v sha256sum >/dev/null 2>&1 && sha256sum *.tar.gz *.zip > checksums.txt 2>/dev/null) \
-	  || (command -v shasum   >/dev/null 2>&1 && shasum -a 256 *.tar.gz *.zip > checksums.txt 2>/dev/null) \
+	  (command -v sha256sum >/dev/null 2>&1 && sha256sum *.tar.gz > checksums.txt 2>/dev/null) \
+	  || (command -v shasum   >/dev/null 2>&1 && shasum -a 256 *.tar.gz > checksums.txt 2>/dev/null) \
 	  || true
 	@[ -s $(DIST)/checksums.txt ] && echo "→ wrote $(DIST)/checksums.txt" || echo "→ no checksums (no archives?)"
