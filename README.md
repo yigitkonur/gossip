@@ -68,9 +68,20 @@ You run `gossip claude` in Claude Code and `gossip codex` in a second terminal â
 curl -fsSL https://raw.githubusercontent.com/yigitkonur/gossip/master/install.sh | sudo bash
 ```
 
-This downloads the right prebuilt binary for your OS and architecture, drops it at `/usr/local/bin/gossip`, and verifies the install by running `gossip version`. It is idempotent â€” re-running upgrades in place.
+This downloads the right prebuilt binary for your OS and architecture, drops it at `/usr/local/bin/gossip`, verifies the sha256 checksum, and runs `gossip version`. Re-running upgrades in place; if the target version is already installed it exits cleanly without touching anything.
 
-> **Prefer not to pipe to sudo?** Inspect the script first: `curl -fsSL https://raw.githubusercontent.com/yigitkonur/gossip/master/install.sh | less`. Or [build from source](#building-from-source).
+```bash
+# install a specific version
+curl -fsSL https://raw.githubusercontent.com/yigitkonur/gossip/master/install.sh | sudo bash -s -- --version v0.2.0
+
+# install to a user-writable dir (no sudo)
+curl -fsSL https://raw.githubusercontent.com/yigitkonur/gossip/master/install.sh | bash -s -- --install-dir "$HOME/.local/bin"
+
+# uninstall
+curl -fsSL https://raw.githubusercontent.com/yigitkonur/gossip/master/install.sh | sudo bash -s -- --uninstall
+```
+
+> **Prefer not to pipe to sudo?** Inspect the script first: `curl -fsSL https://raw.githubusercontent.com/yigitkonur/gossip/master/install.sh -o install.sh && less install.sh`. Or [build from source](#building-from-source).
 
 Supported targets:
 
