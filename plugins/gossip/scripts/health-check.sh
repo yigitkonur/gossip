@@ -6,15 +6,11 @@ INPUT="$(cat 2>/dev/null || true)"
 workspace="${CLAUDE_PROJECT_DIR:-${PWD}}"
 cooldown_seconds="${GOSSIP_HEALTH_HOOK_COOLDOWN_SECONDS:-120}"
 state_root="${GOSSIP_HOOK_STATE_DIR:-${TMPDIR:-/tmp}/gossip-hooks}"
-default_control_port="${GOSSIP_CONTROL_PORT:-${AGENTBRIDGE_CONTROL_PORT:-4502}}"
+default_control_port="${GOSSIP_CONTROL_PORT:-4502}"
 
 resolve_state_dir() {
   if [ -n "${GOSSIP_STATE_DIR:-}" ]; then
     printf '%s' "${GOSSIP_STATE_DIR}"
-    return
-  fi
-  if [ -n "${AGENTBRIDGE_STATE_DIR:-}" ]; then
-    printf '%s' "${AGENTBRIDGE_STATE_DIR}"
     return
   fi
   if [ "$(uname -s)" = "Darwin" ]; then

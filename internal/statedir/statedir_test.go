@@ -33,20 +33,18 @@ func TestStateDir_PathsAreUnderDir(t *testing.T) {
 	}
 }
 
-func TestStateDir_UsesAgentBridgeAliasWhenPrimaryUnset(t *testing.T) {
-	t.Setenv("GOSSIP_STATE_DIR", "")
-	t.Setenv("AGENTBRIDGE_STATE_DIR", filepath.Join(t.TempDir(), "agentbridge-state"))
-	if got := New("").Dir(); got != os.Getenv("AGENTBRIDGE_STATE_DIR") {
-		t.Fatalf("New(\"\").Dir() = %q, want AGENTBRIDGE_STATE_DIR %q", got, os.Getenv("AGENTBRIDGE_STATE_DIR"))
+func TestStateDir_UsesGossipEnvOverride(t *testing.T) {
+	override := filepath.Join(t.TempDir(), "gossip-state")
+	t.Setenv("GOSSIP_STATE_DIR", override)
+	if got := New("").Dir(); got != override {
+		t.Fatalf("New(\"\").Dir() = %q, want GOSSIP_STATE_DIR %q", got, override)
 	}
 }
 
-func TestStateDir_PrimaryEnvWinsOverAlias(t *testing.T) {
-	primary := filepath.Join(t.TempDir(), "gossip-state")
-	alias := filepath.Join(t.TempDir(), "agentbridge-state")
-	t.Setenv("GOSSIP_STATE_DIR", primary)
-	t.Setenv("AGENTBRIDGE_STATE_DIR", alias)
-	if got := New("").Dir(); got != primary {
-		t.Fatalf("New(\"\").Dir() = %q, want GOSSIP_STATE_DIR %q", got, primary)
+func TestStateDir_ExplicitOverrideWinsOverEnv(t *testing.T) {
+	explicit := filepath.Join(t.TempDir(), "explicit")
+	t.Setenv("GOSSIP_STATE_DIR", filepath.Join(t.TempDir(), "env"))
+	if got := New(explicit).Dir(); got != explicit {
+		t.Fatalf("New(%q).Dir() = %q, want explicit override", explicit, got)
 	}
 }

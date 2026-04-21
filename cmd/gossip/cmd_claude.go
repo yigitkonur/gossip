@@ -229,11 +229,9 @@ func shouldSendReconnectNotice(last *atomic.Int64, now time.Time) bool {
 }
 
 func maxBufferedMessagesFromEnv() int {
-	for _, key := range []string{"GOSSIP_MAX_BUFFERED_MESSAGES", "AGENTBRIDGE_MAX_BUFFERED_MESSAGES"} {
-		if raw := os.Getenv(key); raw != "" {
-			if n, err := strconv.Atoi(raw); err == nil && n > 0 {
-				return n
-			}
+	if raw := os.Getenv("GOSSIP_MAX_BUFFERED_MESSAGES"); raw != "" {
+		if n, err := strconv.Atoi(raw); err == nil && n > 0 {
+			return n
 		}
 	}
 	return 0
@@ -241,9 +239,6 @@ func maxBufferedMessagesFromEnv() int {
 
 func resolveClaudeDeliveryMode(cfg config.Config, logger func(string)) mcp.DeliveryMode {
 	if mode, ok := parseDeliveryMode(os.Getenv("GOSSIP_MODE")); ok {
-		return mode
-	}
-	if mode, ok := parseDeliveryMode(os.Getenv("AGENTBRIDGE_MODE")); ok {
 		return mode
 	}
 	if agent, ok := cfg.Agents["claude"]; ok {

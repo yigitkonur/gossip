@@ -208,15 +208,18 @@ The TS-shape aliases (`codex.appPort`, `codex.proxyPort`, `claude.mode`) are sti
 
 Env vars win over `.gossip/config.json`.
 
-| Variable                            | Legacy alias                               | Meaning                                            |
-| ----------------------------------- | ------------------------------------------ | -------------------------------------------------- |
-| `GOSSIP_CONTROL_PORT`               | `AGENTBRIDGE_CONTROL_PORT`                 | Daemon control port.                               |
-| `GOSSIP_PROXY_PORT`                 | `AGENTBRIDGE_PROXY_PORT`                   | Codex proxy port.                                   |
-| `GOSSIP_MODE`                       | `AGENTBRIDGE_MODE`                         | `push` or `pull`.                                   |
-| `GOSSIP_MAX_BUFFERED_MESSAGES`      | `AGENTBRIDGE_MAX_BUFFERED_MESSAGES`        | Disconnect buffer size (default auto).              |
-| `GOSSIP_IDLE_SHUTDOWN_SECONDS`      | —                                          | `0` disables idle shutdown — handy for tests.       |
-| `GOSSIP_STATE_DIR`                  | —                                          | Override the runtime state directory.              |
-| `GOSSIP_LOG_LEVEL`                  | —                                          | `debug` / `info` / `warn` / `error`.               |
+| Variable                         | Meaning                                         |
+| -------------------------------- | ----------------------------------------------- |
+| `GOSSIP_CONTROL_PORT`            | Daemon control port.                            |
+| `GOSSIP_PROXY_PORT`              | Codex proxy port.                               |
+| `GOSSIP_MODE`                    | Delivery mode: `push` or `pull`.                |
+| `GOSSIP_MAX_BUFFERED_MESSAGES`   | Disconnect buffer size (default auto).          |
+| `GOSSIP_ATTENTION_WINDOW_MS`     | Claude attention window, milliseconds.          |
+| `GOSSIP_IDLE_SHUTDOWN_MS`        | Idle-shutdown timeout, milliseconds.            |
+| `GOSSIP_IDLE_SHUTDOWN_SECONDS`   | Alt spelling in seconds — `0` disables.         |
+| `GOSSIP_FILTER_MODE`             | Message filter mode.                            |
+| `GOSSIP_STATE_DIR`               | Override the runtime state directory.           |
+| `GOSSIP_LOG_LEVEL`               | `debug` / `info` / `warn` / `error`.            |
 
 ## MCP tools exposed to Claude
 

@@ -30,11 +30,9 @@ func daemonOptionsFromConfig(sd *statedir.StateDir, cfg config.Config) daemon.Op
 }
 
 func attentionWindowFromConfig(cfg config.Config) time.Duration {
-	for _, key := range []string{"GOSSIP_ATTENTION_WINDOW_MS", "AGENTBRIDGE_ATTENTION_WINDOW_MS"} {
-		if raw := os.Getenv(key); raw != "" {
-			if n, err := strconv.Atoi(raw); err == nil && n > 0 {
-				return time.Duration(n) * time.Millisecond
-			}
+	if raw := os.Getenv("GOSSIP_ATTENTION_WINDOW_MS"); raw != "" {
+		if n, err := strconv.Atoi(raw); err == nil && n > 0 {
+			return time.Duration(n) * time.Millisecond
 		}
 	}
 	if cfg.TurnCoordination.AttentionWindowSeconds > 0 {
@@ -44,24 +42,20 @@ func attentionWindowFromConfig(cfg config.Config) time.Duration {
 }
 
 func idleShutdownFromConfig(cfg config.Config) time.Duration {
-	for _, key := range []string{"GOSSIP_IDLE_SHUTDOWN_MS", "AGENTBRIDGE_IDLE_SHUTDOWN_MS"} {
-		if raw := os.Getenv(key); raw != "" {
-			if n, err := strconv.Atoi(raw); err == nil && n > 0 {
-				return time.Duration(n) * time.Millisecond
-			}
+	if raw := os.Getenv("GOSSIP_IDLE_SHUTDOWN_MS"); raw != "" {
+		if n, err := strconv.Atoi(raw); err == nil && n > 0 {
+			return time.Duration(n) * time.Millisecond
 		}
 	}
 	return time.Duration(cfg.IdleShutdownSeconds) * time.Second
 }
 
 func daemonFilterMode(logger func(string)) filter.Mode {
-	for _, key := range []string{"GOSSIP_FILTER_MODE", "AGENTBRIDGE_FILTER_MODE"} {
-		if mode, ok := parseFilterMode(os.Getenv(key)); ok {
-			if logger != nil {
-				logger("Filter mode: " + string(mode))
-			}
-			return mode
+	if mode, ok := parseFilterMode(os.Getenv("GOSSIP_FILTER_MODE")); ok {
+		if logger != nil {
+			logger("Filter mode: " + string(mode))
 		}
+		return mode
 	}
 	if logger != nil {
 		logger("Filter mode: " + string(filter.ModeFiltered))

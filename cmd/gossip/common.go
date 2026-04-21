@@ -9,7 +9,7 @@ import (
 )
 
 func controlPort() int {
-	if port, ok := firstPositiveIntEnv("GOSSIP_CONTROL_PORT", "AGENTBRIDGE_CONTROL_PORT"); ok {
+	if port, ok := firstPositiveIntEnv("GOSSIP_CONTROL_PORT"); ok {
 		return port
 	}
 	return 4502

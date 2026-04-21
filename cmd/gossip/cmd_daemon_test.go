@@ -32,39 +32,27 @@ func TestDaemonOptionsFromConfig_UsesControlPortHelper(t *testing.T) {
 
 func TestAttentionWindowFromConfig_EnvOverrideWins(t *testing.T) {
 	t.Setenv("GOSSIP_ATTENTION_WINDOW_MS", "2500")
-	t.Setenv("AGENTBRIDGE_ATTENTION_WINDOW_MS", "7000")
 	if got := attentionWindowFromConfig(config.DefaultConfig); got != 2500*time.Millisecond {
 		t.Fatalf("attentionWindowFromConfig() = %s, want 2500ms", got)
 	}
 }
 
-func TestIdleShutdownFromConfig_PrimaryEnvOverrideWins(t *testing.T) {
+func TestIdleShutdownFromConfig_EnvOverrideWins(t *testing.T) {
 	t.Setenv("GOSSIP_IDLE_SHUTDOWN_MS", "9000")
-	t.Setenv("AGENTBRIDGE_IDLE_SHUTDOWN_MS", "4000")
 	if got := idleShutdownFromConfig(config.Config{IdleShutdownSeconds: 30}); got != 9*time.Second {
 		t.Fatalf("idleShutdownFromConfig() = %s, want 9s", got)
 	}
 }
 
-func TestIdleShutdownFromConfig_LegacyAliasHonored(t *testing.T) {
-	t.Setenv("GOSSIP_IDLE_SHUTDOWN_MS", "")
-	t.Setenv("AGENTBRIDGE_IDLE_SHUTDOWN_MS", "4000")
-	if got := idleShutdownFromConfig(config.Config{IdleShutdownSeconds: 30}); got != 4*time.Second {
-		t.Fatalf("idleShutdownFromConfig() = %s, want 4s", got)
-	}
-}
-
 func TestIdleShutdownFromConfig_FallsBackToConfig(t *testing.T) {
 	t.Setenv("GOSSIP_IDLE_SHUTDOWN_MS", "")
-	t.Setenv("AGENTBRIDGE_IDLE_SHUTDOWN_MS", "")
 	if got := idleShutdownFromConfig(config.Config{IdleShutdownSeconds: 42}); got != 42*time.Second {
 		t.Fatalf("idleShutdownFromConfig() = %s, want 42s", got)
 	}
 }
 
-func TestDaemonFilterMode_UsesPrimaryEnvAndLogsMode(t *testing.T) {
+func TestDaemonFilterMode_UsesEnvAndLogsMode(t *testing.T) {
 	t.Setenv("GOSSIP_FILTER_MODE", "passthrough")
-	t.Setenv("AGENTBRIDGE_FILTER_MODE", "filtered")
 	var logs []string
 	got := daemonFilterMode(func(msg string) { logs = append(logs, msg) })
 	if got != filter.ModeFull {
