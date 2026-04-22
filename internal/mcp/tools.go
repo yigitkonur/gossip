@@ -10,12 +10,11 @@ import (
 	"github.com/yigitkonur/gossip/internal/protocol"
 )
 
-var replyInputSchema = json.RawMessage(`{
+var consultCodexInputSchema = json.RawMessage(`{
   "type": "object",
   "properties": {
-    "chat_id": {"type": "string", "description": "The conversation to reply in (from the inbound <channel> tag)."},
     "text": {"type": "string", "description": "The message to send to Codex."},
-    "require_reply": {"type": "boolean", "description": "When true, Codex is required to send a reply."}
+    "require_reply": {"type": "boolean", "description": "When true, Codex must reply with an [IMPORTANT]-marked message before control returns."}
   },
   "required": ["text"]
 }`)
@@ -26,11 +25,15 @@ var getMessagesInputSchema = json.RawMessage(`{
   "required": []
 }`)
 
+const consultCodexDescription = "Send a message to Codex — lands as a new user turn in its session. Use any time you want Codex to act, verify, or answer. Available whenever gossip is running; no prior Codex message required. Prefer ending your turn with [COMPLETION] on its own line for the automatic review loop; reserve this tool for targeted mid-turn consultations."
+
+const getMessagesDescription = "Drain pending messages from Codex. Call when you expect a Codex response or want to check what has accumulated."
+
 func (s *Server) handleToolsList(req Request) {
 	result := ToolListResult{
 		Tools: []Tool{
-			{Name: "reply", Description: "Send a message back to Codex. Your reply will be injected into the Codex session as a new user turn.", InputSchema: replyInputSchema},
-			{Name: "get_messages", Description: "Check for new messages from Codex. Call this after sending a reply or when you expect a response from Codex.", InputSchema: getMessagesInputSchema},
+			{Name: "consult_codex", Description: consultCodexDescription, InputSchema: consultCodexInputSchema},
+			{Name: "get_messages", Description: getMessagesDescription, InputSchema: getMessagesInputSchema},
 		},
 	}
 	s.respond(req.ID, result)
@@ -46,8 +49,8 @@ func (s *Server) handleToolsCall(ctx context.Context, req Request) {
 		return
 	}
 	switch call.Name {
-	case "reply":
-		s.handleReplyTool(ctx, req.ID, call.Arguments)
+	case "consult_codex":
+		s.handleConsultCodex(ctx, req.ID, call.Arguments)
 	case "get_messages":
 		s.handleGetMessagesTool(req.ID)
 	default:
@@ -55,22 +58,18 @@ func (s *Server) handleToolsCall(ctx context.Context, req Request) {
 	}
 }
 
-func (s *Server) handleReplyTool(ctx context.Context, reqID json.RawMessage, args map[string]any) {
+func (s *Server) handleConsultCodex(ctx context.Context, reqID json.RawMessage, args map[string]any) {
 	text, _ := args["text"].(string)
 	if text == "" {
 		s.respond(reqID, ToolCallResult{IsError: true, Content: []ToolContent{{Type: "text", Text: "Error: missing required parameter 'text'"}}})
 		return
 	}
-	chatID, _ := args["chat_id"].(string)
 	requireReply, _ := args["require_reply"].(bool)
 	if s.opts.ReplyHandler == nil {
-		s.respond(reqID, ToolCallResult{IsError: true, Content: []ToolContent{{Type: "text", Text: "Error: bridge not initialized, cannot send reply."}}})
+		s.respond(reqID, ToolCallResult{IsError: true, Content: []ToolContent{{Type: "text", Text: "Error: bridge not initialized, cannot send."}}})
 		return
 	}
-	msgID := chatID
-	if msgID == "" {
-		msgID = fmt.Sprintf("reply_%d", time.Now().UnixMilli())
-	}
+	msgID := fmt.Sprintf("consult_%d", time.Now().UnixMilli())
 	result := s.opts.ReplyHandler(ctx, protocol.BridgeMessage{
 		ID:        msgID,
 		Source:    protocol.SourceClaude,
@@ -81,9 +80,9 @@ func (s *Server) handleReplyTool(ctx context.Context, reqID json.RawMessage, arg
 		s.respond(reqID, ToolCallResult{IsError: true, Content: []ToolContent{{Type: "text", Text: "Error: " + result.Error}}})
 		return
 	}
-	response := "Reply sent to Codex."
+	response := "Sent."
 	if pending := s.pendingCount(); pending > 0 {
-		response += fmt.Sprintf(" Note: %d unread Codex message(s) already waiting — call get_messages to read them.", pending)
+		response += fmt.Sprintf(" %d Codex message(s) in your inbox.", pending)
 	}
 	s.respond(reqID, ToolCallResult{Content: []ToolContent{{Type: "text", Text: response}}})
 }
