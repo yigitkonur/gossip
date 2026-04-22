@@ -40,13 +40,19 @@ var (
 )
 
 func newInitCmd() *cobra.Command {
-	return &cobra.Command{
+	var uninstall bool
+	cmd := &cobra.Command{
 		Use:   "init",
-		Short: "Create .gossip/ defaults in the current project",
+		Short: "Create .gossip/ defaults in the current project (use --uninstall to remove)",
 		RunE: func(cmd *cobra.Command, args []string) error {
+			if uninstall {
+				return runUninstall(cmd.OutOrStdout())
+			}
 			return runInit(cmd.OutOrStdout())
 		},
 	}
+	cmd.Flags().BoolVar(&uninstall, "uninstall", false, "Remove gossip hooks from .claude/settings.json, gossip server from .mcp.json, and delete .gossip/")
+	return cmd
 }
 
 func runInit(out io.Writer) error {
@@ -59,10 +65,14 @@ func runInit(out io.Writer) error {
 	if err != nil {
 		return err
 	}
+	settingsPath, settingsStatus, err := ensureProjectClaudeSettings("")
+	if err != nil {
+		return err
+	}
 
 	fmt.Fprintln(out, paintedBanner())
 	fmt.Fprintln(out, ui.bold("Project config:"))
-	if len(created) == 0 && mcpStatus == mcpEnsureUnchanged {
+	if len(created) == 0 && mcpStatus == mcpEnsureUnchanged && settingsStatus == claudeSettingsUnchanged {
 		fmt.Fprintln(out, "  "+ui.yellow("⚠️")+" No files created — project already configured.")
 	} else {
 		for _, p := range created {
@@ -73,6 +83,12 @@ func runInit(out io.Writer) error {
 			fmt.Fprintf(out, "  %s Created: %s\n", ui.green("✅"), ui.cyan(mcpPath))
 		case mcpEnsureMerged:
 			fmt.Fprintf(out, "  %s Merged gossip into: %s\n", ui.green("✅"), ui.cyan(mcpPath))
+		}
+		switch settingsStatus {
+		case claudeSettingsCreated:
+			fmt.Fprintf(out, "  %s Created: %s\n", ui.green("✅"), ui.cyan(settingsPath))
+		case claudeSettingsMerged:
+			fmt.Fprintf(out, "  %s Merged hooks into: %s\n", ui.green("✅"), ui.cyan(settingsPath))
 		}
 	}
 	fmt.Fprintln(out)
@@ -504,4 +520,298 @@ func parseVersionPart(parts []string, idx int) int {
 	var n int
 	fmt.Sscanf(parts[idx], "%d", &n)
 	return n
+}
+
+// claudeSettingsStatus reports what ensureProjectClaudeSettings did.
+type claudeSettingsStatus int
+
+const (
+	claudeSettingsUnchanged claudeSettingsStatus = iota
+	claudeSettingsCreated
+	claudeSettingsMerged
+)
+
+// gossipHookEntries is the canonical hook block gossip owns in
+// .claude/settings.json. Changes here must stay idempotent — ensureProject
+// ClaudeSettings re-merges every init, so any drift against the existing
+// file is silently normalized to this shape.
+var gossipHookEntries = map[string][]any{
+	"SessionStart": {
+		map[string]any{
+			"matcher": "*",
+			"hooks": []any{
+				map[string]any{"type": "command", "command": "gossip hook session-start"},
+			},
+		},
+	},
+	"Stop": {
+		map[string]any{
+			"matcher": "*",
+			"hooks": []any{
+				map[string]any{"type": "command", "command": "gossip hook stop"},
+			},
+		},
+	},
+}
+
+// ensureProjectClaudeSettings merges the canonical gossip hook block into
+// `<project>/.claude/settings.json`, creating the file and parent directory
+// when missing. Unrelated hooks and settings keys are preserved verbatim;
+// pre-existing gossip entries (detected by command string starting with
+// "gossip hook ") are replaced with the canonical version so repeated inits
+// are idempotent.
+func ensureProjectClaudeSettings(projectRoot string) (string, claudeSettingsStatus, error) {
+	if projectRoot == "" {
+		wd, err := os.Getwd()
+		if err != nil {
+			return "", claudeSettingsUnchanged, err
+		}
+		projectRoot = wd
+	}
+	dir := filepath.Join(projectRoot, ".claude")
+	path := filepath.Join(dir, "settings.json")
+
+	raw, readErr := os.ReadFile(path)
+	if readErr != nil && !os.IsNotExist(readErr) {
+		return path, claudeSettingsUnchanged, readErr
+	}
+
+	var doc map[string]any
+	fileMissing := readErr != nil
+	if !fileMissing && len(raw) > 0 {
+		if err := json.Unmarshal(raw, &doc); err != nil {
+			return path, claudeSettingsUnchanged, fmt.Errorf("parse %s: %w", path, err)
+		}
+	}
+	if doc == nil {
+		doc = map[string]any{}
+	}
+
+	hooks, _ := doc["hooks"].(map[string]any)
+	if hooks == nil {
+		hooks = map[string]any{}
+	}
+
+	changed := false
+	for event, entries := range gossipHookEntries {
+		merged, didChange := mergeGossipHookEntries(hooks[event], entries)
+		if didChange {
+			changed = true
+		}
+		hooks[event] = merged
+	}
+	doc["hooks"] = hooks
+
+	if fileMissing {
+		if err := os.MkdirAll(dir, 0o755); err != nil {
+			return path, claudeSettingsUnchanged, err
+		}
+	}
+	if !changed && !fileMissing {
+		return path, claudeSettingsUnchanged, nil
+	}
+	body, err := json.MarshalIndent(doc, "", "  ")
+	if err != nil {
+		return path, claudeSettingsUnchanged, err
+	}
+	body = append(body, '\n')
+	if err := os.WriteFile(path, body, 0o644); err != nil {
+		return path, claudeSettingsUnchanged, err
+	}
+	if fileMissing {
+		return path, claudeSettingsCreated, nil
+	}
+	return path, claudeSettingsMerged, nil
+}
+
+// mergeGossipHookEntries returns the list of hook entries for a single
+// event with gossip's canonical entries applied. Any existing entry whose
+// nested hooks command starts with "gossip hook " is stripped first, so
+// re-running init after editing the hook command upgrades cleanly.
+// changed is true iff the resulting JSON differs from existing.
+func mergeGossipHookEntries(existing any, gossipEntries []any) ([]any, bool) {
+	var out []any
+	if list, ok := existing.([]any); ok {
+		for _, e := range list {
+			if !entryContainsGossipHook(e) {
+				out = append(out, e)
+			}
+		}
+	}
+	out = append(out, gossipEntries...)
+	return out, !sameShape(existing, out)
+}
+
+func entryContainsGossipHook(entry any) bool {
+	m, ok := entry.(map[string]any)
+	if !ok {
+		return false
+	}
+	hooks, _ := m["hooks"].([]any)
+	for _, h := range hooks {
+		hm, ok := h.(map[string]any)
+		if !ok {
+			continue
+		}
+		cmd, _ := hm["command"].(string)
+		if strings.HasPrefix(cmd, "gossip hook ") {
+			return true
+		}
+	}
+	return false
+}
+
+func sameShape(a, b any) bool {
+	ba, errA := json.Marshal(a)
+	bb, errB := json.Marshal(b)
+	return errA == nil && errB == nil && string(ba) == string(bb)
+}
+
+// runUninstall reverses the footprint of a previous `gossip init` run.
+// Strips gossip hooks from .claude/settings.json, strips the gossip MCP
+// entry from .mcp.json (if present), and deletes the .gossip/ directory.
+// Every step is best-effort and non-fatal: the command reports what it
+// removed and exits 0 even when some steps were no-ops.
+func runUninstall(out io.Writer) error {
+	wd, err := os.Getwd()
+	if err != nil {
+		return err
+	}
+	fmt.Fprintln(out, paintedBanner())
+	fmt.Fprintln(out, ui.bold("Uninstalling gossip from this project:"))
+
+	settingsPath := filepath.Join(wd, ".claude", "settings.json")
+	if removed, err := stripGossipHooksFromSettings(settingsPath); err != nil {
+		fmt.Fprintf(out, "  %s %s: %v\n", ui.yellow("⚠️"), settingsPath, err)
+	} else if removed {
+		fmt.Fprintf(out, "  %s Removed gossip hooks from %s\n", ui.green("✅"), ui.cyan(settingsPath))
+	} else {
+		fmt.Fprintf(out, "  %s %s: no gossip hooks present\n", ui.yellow("·"), settingsPath)
+	}
+
+	mcpPath := filepath.Join(wd, ".mcp.json")
+	if removed, err := stripGossipFromMCP(mcpPath); err != nil {
+		fmt.Fprintf(out, "  %s %s: %v\n", ui.yellow("⚠️"), mcpPath, err)
+	} else if removed {
+		fmt.Fprintf(out, "  %s Removed gossip MCP server from %s\n", ui.green("✅"), ui.cyan(mcpPath))
+	} else {
+		fmt.Fprintf(out, "  %s %s: no gossip entry present\n", ui.yellow("·"), mcpPath)
+	}
+
+	gossipDir := filepath.Join(wd, ".gossip")
+	if _, err := os.Stat(gossipDir); err == nil {
+		if err := os.RemoveAll(gossipDir); err != nil {
+			fmt.Fprintf(out, "  %s %s: %v\n", ui.yellow("⚠️"), gossipDir, err)
+		} else {
+			fmt.Fprintf(out, "  %s Removed %s\n", ui.green("✅"), ui.cyan(gossipDir))
+		}
+	} else {
+		fmt.Fprintf(out, "  %s %s: already absent\n", ui.yellow("·"), gossipDir)
+	}
+
+	fmt.Fprintln(out)
+	fmt.Fprintln(out, "Uninstall complete. Run `gossip init` to re-enable the bridge in this project.")
+	return nil
+}
+
+func stripGossipHooksFromSettings(path string) (bool, error) {
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return false, nil
+		}
+		return false, err
+	}
+	var doc map[string]any
+	if len(raw) > 0 {
+		if err := json.Unmarshal(raw, &doc); err != nil {
+			return false, fmt.Errorf("parse settings.json: %w", err)
+		}
+	}
+	hooks, _ := doc["hooks"].(map[string]any)
+	if hooks == nil {
+		return false, nil
+	}
+	changed := false
+	for event, v := range hooks {
+		list, ok := v.([]any)
+		if !ok {
+			continue
+		}
+		var kept []any
+		for _, e := range list {
+			if entryContainsGossipHook(e) {
+				changed = true
+				continue
+			}
+			kept = append(kept, e)
+		}
+		if len(kept) == 0 {
+			delete(hooks, event)
+			changed = true
+		} else {
+			hooks[event] = kept
+		}
+	}
+	if len(hooks) == 0 {
+		delete(doc, "hooks")
+	} else {
+		doc["hooks"] = hooks
+	}
+	if !changed {
+		return false, nil
+	}
+	if len(doc) == 0 {
+		if err := os.Remove(path); err != nil {
+			return false, err
+		}
+		return true, nil
+	}
+	body, err := json.MarshalIndent(doc, "", "  ")
+	if err != nil {
+		return false, err
+	}
+	body = append(body, '\n')
+	return true, os.WriteFile(path, body, 0o644)
+}
+
+func stripGossipFromMCP(path string) (bool, error) {
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return false, nil
+		}
+		return false, err
+	}
+	var doc map[string]any
+	if len(raw) > 0 {
+		if err := json.Unmarshal(raw, &doc); err != nil {
+			return false, fmt.Errorf("parse .mcp.json: %w", err)
+		}
+	}
+	servers, _ := doc["mcpServers"].(map[string]any)
+	if servers == nil {
+		return false, nil
+	}
+	if _, ok := servers["gossip"]; !ok {
+		return false, nil
+	}
+	delete(servers, "gossip")
+	if len(servers) == 0 {
+		delete(doc, "mcpServers")
+	} else {
+		doc["mcpServers"] = servers
+	}
+	if len(doc) == 0 {
+		if err := os.Remove(path); err != nil {
+			return false, err
+		}
+		return true, nil
+	}
+	body, err := json.MarshalIndent(doc, "", "  ")
+	if err != nil {
+		return false, err
+	}
+	body = append(body, '\n')
+	return true, os.WriteFile(path, body, 0o644)
 }
