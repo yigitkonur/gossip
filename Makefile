@@ -1,4 +1,4 @@
-.PHONY: build test vet lint tidy clean gen check \
+.PHONY: build test vet lint tidy clean gen check sync-plugin verify-plugin-sync \
         release release-all release-darwin release-linux \
         checksums
 
@@ -14,8 +14,20 @@ ifeq ($(GOBIN),)
   GOBIN := $(shell go env GOPATH)/bin
 endif
 
-build:
+build: sync-plugin
 	go build $(GOFLAGS) -o $(BINARY) ./cmd/gossip
+
+# sync-plugin mirrors the canonical plugin bundle (plugins/gossip/) into the
+# embed location (internal/pluginbundle/assets/gossip/). The bundle test
+# `TestBundleInSync` fails when the two drift, so run this before building or
+# opening a PR after editing the plugin.
+sync-plugin:
+	@rm -rf internal/pluginbundle/assets/gossip
+	@mkdir -p internal/pluginbundle/assets
+	@cp -R plugins/gossip internal/pluginbundle/assets/gossip
+
+verify-plugin-sync:
+	@go test ./internal/pluginbundle/... -run TestBundleInSync
 
 test:
 	go test -race -count=1 $(PKG)
@@ -37,12 +49,18 @@ check: vet test build
 # ---------- release / cross-compile ----------
 
 # release-binary OS ARCH
+# The rm -rf before the cp -R keeps this idempotent: re-running release on an
+# existing dist folder previously nested plugins/gossip/gossip/... inside the
+# archive because cp -R appended to the existing dest directory.
 define release-binary
 	@mkdir -p $(DIST)/gossip_$(1)_$(2)
 	@echo "→ building $(1)/$(2)"
 	GOOS=$(1) GOARCH=$(2) CGO_ENABLED=0 go build $(GOFLAGS) \
 		-o $(DIST)/gossip_$(1)_$(2)/gossip ./cmd/gossip
 	@cp README.md LICENSE $(DIST)/gossip_$(1)_$(2)/ 2>/dev/null || true
+	@rm -rf $(DIST)/gossip_$(1)_$(2)/share/gossip/plugins/gossip
+	@mkdir -p $(DIST)/gossip_$(1)_$(2)/share/gossip/plugins
+	@cp -R plugins/gossip $(DIST)/gossip_$(1)_$(2)/share/gossip/plugins/gossip
 	tar -czf $(DIST)/gossip_$(VERSION:v%=%)_$(1)_$(2).tar.gz -C $(DIST) gossip_$(1)_$(2)
 endef
 

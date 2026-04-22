@@ -34,3 +34,10 @@ to-delete/
 *.claude-session*
 .continues-handoff.md
 derailment-notes/
+
+# Plugin bundle — hidden dirs here must be tracked even though global gitignore
+# blocks .*/ by default. See internal/pluginbundle/ for the embed mirror.
+!plugins/gossip/.claude-plugin/
+!plugins/gossip/.mcp.json
+!internal/pluginbundle/assets/gossip/.claude-plugin/
+!internal/pluginbundle/assets/gossip/.mcp.json

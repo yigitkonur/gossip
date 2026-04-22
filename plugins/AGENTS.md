@@ -13,3 +13,8 @@ This file applies to `plugins/`.
 ## Keep these rules true
 - Plugin config should match the current CLI commands.
 - Avoid reintroducing legacy complexity here.
+
+## Staying in sync with the embed
+- `plugins/gossip/` is mirrored into `internal/pluginbundle/assets/gossip/` and shipped via `go:embed` in the gossip binary.
+- After editing anything under `plugins/gossip/`, run `make sync-plugin` (or `make build`, which depends on it) before committing.
+- CI catches drift via `TestBundleInSync` in `internal/pluginbundle/`.

@@ -1,10 +1,13 @@
 package main
 
 import (
+	"archive/tar"
 	"bytes"
+	"encoding/json"
 	"os"
 	"path/filepath"
 	"reflect"
+	"strings"
 	"testing"
 )
 
@@ -104,15 +107,306 @@ func overrideInitTestHooks(t *testing.T, execFn func(string, ...string) (string,
 	prevExec := initExecCommand
 	prevHome := initUserHomeDir
 	prevPlugin := initPluginSourceDir
+	prevEmbed := initPluginEmbedWrite
+	prevFetch := initPluginFetchRemote
 	initExecCommand = execFn
 	initUserHomeDir = homeFn
 	initPluginSourceDir = pluginFn
+	// Leave the embed + fetch seams at their production values by default; if
+	// a specific test wants to override them it does so directly and restores
+	// them on its own defer. Saving them here ensures no test can leak a stub
+	// into a later test run through this shared helper.
 	return func() {
 		initExecCommand = prevExec
 		initUserHomeDir = prevHome
 		initPluginSourceDir = prevPlugin
+		initPluginEmbedWrite = prevEmbed
+		initPluginFetchRemote = prevFetch
 	}
 }
+
+func TestInstallPluginBundle_FallsBackToEmbedWhenLocalMissing(t *testing.T) {
+	homeDir := t.TempDir()
+
+	prevHome := initUserHomeDir
+	prevSource := initPluginSourceDir
+	prevFetch := initPluginFetchRemote
+	initUserHomeDir = func() (string, error) { return homeDir, nil }
+	initPluginSourceDir = func() (string, error) { return "", errStubLocalMissing }
+	initPluginFetchRemote = func(string) error {
+		t.Fatalf("remote fetch should not run when embed succeeds")
+		return nil
+	}
+	defer func() {
+		initUserHomeDir = prevHome
+		initPluginSourceDir = prevSource
+		initPluginFetchRemote = prevFetch
+	}()
+
+	source, err := installPluginBundle()
+	if err != nil {
+		t.Fatalf("installPluginBundle: %v", err)
+	}
+	if source != "embedded bundle" {
+		t.Fatalf("source = %q, want embedded bundle", source)
+	}
+	manifest := filepath.Join(homeDir, ".claude", "plugins", "cache", "gossip", ".claude-plugin", "plugin.json")
+	if _, err := os.Stat(manifest); err != nil {
+		t.Fatalf("manifest missing after embed install: %v", err)
+	}
+}
+
+func TestInstallPluginBundle_FallsBackToRemoteWhenLocalAndEmbedFail(t *testing.T) {
+	homeDir := t.TempDir()
+	fetchCalled := false
+
+	prevHome := initUserHomeDir
+	prevSource := initPluginSourceDir
+	prevEmbed := initPluginEmbedWrite
+	prevFetch := initPluginFetchRemote
+	initUserHomeDir = func() (string, error) { return homeDir, nil }
+	initPluginSourceDir = func() (string, error) { return "", errStubLocalMissing }
+	initPluginEmbedWrite = func(string) error { return errStubEmbedBroken }
+	initPluginFetchRemote = func(dst string) error {
+		fetchCalled = true
+		return os.MkdirAll(filepath.Join(dst, ".claude-plugin"), 0o755)
+	}
+	defer func() {
+		initUserHomeDir = prevHome
+		initPluginSourceDir = prevSource
+		initPluginEmbedWrite = prevEmbed
+		initPluginFetchRemote = prevFetch
+	}()
+
+	source, err := installPluginBundle()
+	if err != nil {
+		t.Fatalf("installPluginBundle: %v", err)
+	}
+	if !fetchCalled {
+		t.Fatalf("expected remote fetch to run")
+	}
+	if source != "github release" {
+		t.Fatalf("source = %q, want github release", source)
+	}
+}
+
+func TestInstallPluginBundle_AggregatesErrorsWhenAllFail(t *testing.T) {
+	homeDir := t.TempDir()
+
+	prevHome := initUserHomeDir
+	prevSource := initPluginSourceDir
+	prevEmbed := initPluginEmbedWrite
+	prevFetch := initPluginFetchRemote
+	initUserHomeDir = func() (string, error) { return homeDir, nil }
+	initPluginSourceDir = func() (string, error) { return "", errStubLocalMissing }
+	initPluginEmbedWrite = func(string) error { return errStubEmbedBroken }
+	initPluginFetchRemote = func(string) error { return errStubFetchOffline }
+	defer func() {
+		initUserHomeDir = prevHome
+		initPluginSourceDir = prevSource
+		initPluginEmbedWrite = prevEmbed
+		initPluginFetchRemote = prevFetch
+	}()
+
+	if _, err := installPluginBundle(); err == nil {
+		t.Fatalf("expected error when every source fails")
+	} else {
+		msg := err.Error()
+		for _, frag := range []string{"local:", "embed:", "remote:", "stub-local-missing", "stub-embed-broken", "stub-fetch-offline"} {
+			if !strings.Contains(msg, frag) {
+				t.Errorf("error missing %q: %v", frag, err)
+			}
+		}
+	}
+}
+
+func TestEnsureProjectMCPConfig_CreatesWhenMissing(t *testing.T) {
+	dir := t.TempDir()
+	path, status, err := ensureProjectMCPConfig(dir)
+	if err != nil {
+		t.Fatalf("ensureProjectMCPConfig: %v", err)
+	}
+	if status != mcpEnsureCreated {
+		t.Fatalf("status = %v, want created", status)
+	}
+	if path != filepath.Join(dir, ".mcp.json") {
+		t.Fatalf("path = %q", path)
+	}
+	var doc struct {
+		McpServers map[string]struct {
+			Command string   `json:"command"`
+			Args    []string `json:"args"`
+		} `json:"mcpServers"`
+	}
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("ReadFile: %v", err)
+	}
+	if err := json.Unmarshal(raw, &doc); err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	g, ok := doc.McpServers["gossip"]
+	if !ok {
+		t.Fatalf("gossip entry missing: %s", raw)
+	}
+	if g.Command != "gossip" {
+		t.Errorf("command = %q, want gossip", g.Command)
+	}
+	if !reflect.DeepEqual(g.Args, []string{"claude"}) {
+		t.Errorf("args = %v, want [claude]", g.Args)
+	}
+}
+
+func TestEnsureProjectMCPConfig_LeavesGossipEntryUntouched(t *testing.T) {
+	dir := t.TempDir()
+	existing := `{
+  "mcpServers": {
+    "gossip": { "command": "gossip", "args": ["claude"], "env": {"X": "y"} },
+    "other":  { "command": "foo" }
+  }
+}
+`
+	if err := os.WriteFile(filepath.Join(dir, ".mcp.json"), []byte(existing), 0o644); err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+	_, status, err := ensureProjectMCPConfig(dir)
+	if err != nil {
+		t.Fatalf("ensureProjectMCPConfig: %v", err)
+	}
+	if status != mcpEnsureUnchanged {
+		t.Fatalf("status = %v, want unchanged", status)
+	}
+	got, _ := os.ReadFile(filepath.Join(dir, ".mcp.json"))
+	if string(got) != existing {
+		t.Errorf("body mutated:\ngot:  %s\nwant: %s", got, existing)
+	}
+}
+
+func TestEnsureProjectMCPConfig_MergesIntoFileMissingGossip(t *testing.T) {
+	dir := t.TempDir()
+	existing := `{"mcpServers":{"other":{"command":"foo","args":["bar"]}}}`
+	if err := os.WriteFile(filepath.Join(dir, ".mcp.json"), []byte(existing), 0o644); err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+	_, status, err := ensureProjectMCPConfig(dir)
+	if err != nil {
+		t.Fatalf("ensureProjectMCPConfig: %v", err)
+	}
+	if status != mcpEnsureMerged {
+		t.Fatalf("status = %v, want merged", status)
+	}
+	var doc struct {
+		McpServers map[string]struct {
+			Command string   `json:"command"`
+			Args    []string `json:"args"`
+		} `json:"mcpServers"`
+	}
+	raw, _ := os.ReadFile(filepath.Join(dir, ".mcp.json"))
+	if err := json.Unmarshal(raw, &doc); err != nil {
+		t.Fatalf("parse merged: %v\nbody: %s", err, raw)
+	}
+	if _, ok := doc.McpServers["other"]; !ok {
+		t.Errorf("pre-existing 'other' server dropped")
+	}
+	g, ok := doc.McpServers["gossip"]
+	if !ok {
+		t.Fatalf("gossip not merged in: %s", raw)
+	}
+	if g.Command != "gossip" || !reflect.DeepEqual(g.Args, []string{"claude"}) {
+		t.Errorf("merged gossip entry wrong: cmd=%q args=%v", g.Command, g.Args)
+	}
+}
+
+func TestEnsureProjectMCPConfig_RejectsInvalidJSON(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, ".mcp.json"), []byte("{this is not json"), 0o644); err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+	if _, _, err := ensureProjectMCPConfig(dir); err == nil {
+		t.Fatalf("expected error on invalid json")
+	}
+}
+
+func TestReleaseTag_StripsDevBuilds(t *testing.T) {
+	cases := map[string]string{
+		"0.2.0":      "v0.2.0",
+		"v0.2.0":     "v0.2.0",
+		"0.2.0-dev":  "",
+		"0.2.1-next": "",
+		"dev":        "",
+		"":           "",
+	}
+	prev := version
+	defer func() { version = prev }()
+	for in, want := range cases {
+		version = in
+		if got := releaseTag(); got != want {
+			t.Errorf("releaseTag(%q) = %q, want %q", in, got, want)
+		}
+	}
+}
+
+func TestExtractPluginBundleFromTar_OnlyCopiesPluginsGossip(t *testing.T) {
+	var buf bytes.Buffer
+	tw := tar.NewWriter(&buf)
+	entries := map[string]string{
+		"gossip-0.2.0/README.md":                              "repo readme",
+		"gossip-0.2.0/plugins/gossip/README.md":               "plugin readme",
+		"gossip-0.2.0/plugins/gossip/.claude-plugin/a.json":   "{}",
+		"gossip-0.2.0/plugins/gossip/server/gossip-claude.sh": "#!/bin/sh",
+	}
+	for name, body := range entries {
+		hdr := &tar.Header{Name: name, Mode: 0o644, Size: int64(len(body)), Typeflag: tar.TypeReg}
+		if strings.HasSuffix(name, ".sh") {
+			hdr.Mode = 0o755
+		}
+		if err := tw.WriteHeader(hdr); err != nil {
+			t.Fatalf("WriteHeader: %v", err)
+		}
+		if _, err := tw.Write([]byte(body)); err != nil {
+			t.Fatalf("Write: %v", err)
+		}
+	}
+	if err := tw.Close(); err != nil {
+		t.Fatalf("tar close: %v", err)
+	}
+
+	dst := t.TempDir()
+	if err := extractPluginBundleFromTar(tar.NewReader(&buf), dst); err != nil {
+		t.Fatalf("extract: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(dst, "README.md")); err != nil {
+		t.Errorf("plugin README missing: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(dst, ".claude-plugin", "a.json")); err != nil {
+		t.Errorf("plugin manifest missing: %v", err)
+	}
+	info, err := os.Stat(filepath.Join(dst, "server", "gossip-claude.sh"))
+	if err != nil {
+		t.Fatalf("shim missing: %v", err)
+	}
+	if info.Mode().Perm()&0o111 == 0 {
+		t.Errorf("shim not executable: %v", info.Mode())
+	}
+	// The repo-level README ("repo readme" entry under gossip-0.2.0/README.md)
+	// must NOT leak out of the plugins/gossip/ filter. Stat the sibling of
+	// dst that would receive it if filtering were broken.
+	if _, err := os.Stat(filepath.Join(dst, "..", "README.md")); err == nil {
+		t.Errorf("repo README leaked above plugin bundle root — extractor filter is broken")
+	} else if !os.IsNotExist(err) {
+		t.Errorf("unexpected stat error on leak check: %v", err)
+	}
+}
+
+var (
+	errStubLocalMissing = stubErr("stub-local-missing")
+	errStubEmbedBroken  = stubErr("stub-embed-broken")
+	errStubFetchOffline = stubErr("stub-fetch-offline")
+)
+
+type stubErr string
+
+func (e stubErr) Error() string { return string(e) }
 
 func mustWriteFile(t *testing.T, path, content string) {
 	t.Helper()
