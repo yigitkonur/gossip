@@ -63,3 +63,14 @@ func (s *StateDir) KilledFile() string { return filepath.Join(s.dir, "killed") }
 
 // TuiPidFile returns the managed TUI PID file path.
 func (s *StateDir) TuiPidFile() string { return filepath.Join(s.dir, "codex-tui.pid") }
+
+// LoopStateFile returns the path to the completion-loop state JSON. Keyed by
+// session ID internally; written by `gossip hook` handlers under an advisory
+// flock (`<path>.lock`).
+func (s *StateDir) LoopStateFile() string { return filepath.Join(s.dir, "loop-state.json") }
+
+// OutboundQueueFile returns the path to the persistent Claude→Codex outbound
+// journal. The daemon appends one JSON line per pending blocking send and
+// drains it when the Codex TUI becomes attachable, making startup order
+// between `gossip claude` and `gossip codex` independent.
+func (s *StateDir) OutboundQueueFile() string { return filepath.Join(s.dir, "outbound-queue.jsonl") }

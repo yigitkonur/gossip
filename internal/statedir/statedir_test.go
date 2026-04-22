@@ -24,7 +24,11 @@ func TestStateDir_EnsureCreatesDir(t *testing.T) {
 func TestStateDir_PathsAreUnderDir(t *testing.T) {
 	dir := t.TempDir()
 	s := New(dir)
-	paths := []string{s.PidFile(), s.LogFile(), s.StatusFile(), s.PortsFile(), s.LockFile(), s.KilledFile(), s.TuiPidFile()}
+	paths := []string{
+		s.PidFile(), s.LogFile(), s.StatusFile(), s.PortsFile(),
+		s.LockFile(), s.KilledFile(), s.TuiPidFile(),
+		s.LoopStateFile(), s.OutboundQueueFile(),
+	}
 	for _, p := range paths {
 		rel, err := filepath.Rel(dir, p)
 		if err != nil || rel == "" || rel[0] == '.' {

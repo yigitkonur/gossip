@@ -14,6 +14,13 @@ var DefaultConfig = Config{
 		BusyGuard:              true,
 	},
 	IdleShutdownSeconds: 30,
+	Loop: LoopConfig{
+		Enabled:          true,
+		MaxIterations:    5,
+		PerTurnTimeoutMs: 90_000,
+		CompletionTags:   []string{"COMPLETION", "DONE", "READY"},
+		ApprovalTags:     []string{"COMPLETED", "APPROVED", "LGTM"},
+	},
 }
 
 // DefaultCollaborationMD is the factory default for collaboration.md.
