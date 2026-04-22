@@ -195,12 +195,10 @@ func (s *Server) handleClientMessage(ctx context.Context, c *controlConn, msg Cl
 		ok, errMsg := s.handler.OnClaudeToCodex(ctx, *msg.Message, msg.RequireReply)
 		_ = c.write(ctx, ServerMessage{Type: ServerMsgClaudeToCodexResult, RequestID: msg.RequestID, Success: ok, Error: errMsg})
 	case ClientMsgClaudeToCodexBlocking:
-		s.mu.Lock()
-		isAttached := s.attached == c
-		s.mu.Unlock()
-		if !isAttached {
-			return
-		}
+		// Intentionally does NOT require attachment. The completion-loop hook
+		// (`gossip bridge send`) dials the control WS as a short-lived
+		// side-channel while the main Claude session is already attached;
+		// asking it to claim the primary attachment would trip CloseCodeReplaced.
 		if msg.Message == nil {
 			_ = c.write(ctx, ServerMessage{Type: ServerMsgClaudeToCodexReply, RequestID: msg.RequestID, Received: false, Error: "missing message"})
 			return
