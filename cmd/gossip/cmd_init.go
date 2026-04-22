@@ -3,6 +3,7 @@ package main
 import (
 	"archive/tar"
 	"compress/gzip"
+	"encoding/json"
 	"fmt"
 	"io"
 	"net/http"
@@ -54,21 +55,24 @@ func runInit(out io.Writer) error {
 	if err != nil {
 		return err
 	}
-	mcpPath, mcpCreated, err := ensureProjectMCPConfig("")
+	mcpPath, mcpStatus, err := ensureProjectMCPConfig("")
 	if err != nil {
 		return err
-	}
-	if mcpCreated {
-		created = append(created, mcpPath)
 	}
 
 	fmt.Fprintln(out, paintedBanner())
 	fmt.Fprintln(out, ui.bold("Project config:"))
-	if len(created) == 0 {
+	if len(created) == 0 && mcpStatus == mcpEnsureUnchanged {
 		fmt.Fprintln(out, "  "+ui.yellow("⚠️")+" No files created — project already configured.")
 	} else {
 		for _, p := range created {
 			fmt.Fprintf(out, "  %s Created: %s\n", ui.green("✅"), ui.cyan(p))
+		}
+		switch mcpStatus {
+		case mcpEnsureCreated:
+			fmt.Fprintf(out, "  %s Created: %s\n", ui.green("✅"), ui.cyan(mcpPath))
+		case mcpEnsureMerged:
+			fmt.Fprintf(out, "  %s Merged gossip into: %s\n", ui.green("✅"), ui.cyan(mcpPath))
 		}
 	}
 	fmt.Fprintln(out)
@@ -123,42 +127,91 @@ func runInit(out io.Writer) error {
 	return nil
 }
 
-// projectMCPConfig is the project-level .mcp.json body that Claude Code reads
-// from the current working directory. It launches `gossip claude` as a stdio
-// MCP server, so the bridge is scoped per-project and survives without the
-// cache-registered plugin.
-const projectMCPConfig = `{
-  "mcpServers": {
-    "gossip": {
-      "command": "gossip",
-      "args": ["claude"]
-    }
-  }
+// gossipMCPServer is the stdio MCP server definition Claude Code uses to
+// launch `gossip claude`. It is merged into the project's .mcp.json on init.
+var gossipMCPServer = map[string]any{
+	"command": "gossip",
+	"args":    []any{"claude"},
 }
-`
 
-// ensureProjectMCPConfig writes .mcp.json at projectRoot (cwd when empty) if
-// it does not already exist. Returns the absolute path and whether it was
-// just created. Leaves existing .mcp.json untouched — the user may have
-// merged other MCP servers into it.
-func ensureProjectMCPConfig(projectRoot string) (string, bool, error) {
+// mcpEnsureStatus reports what ensureProjectMCPConfig did to .mcp.json.
+type mcpEnsureStatus int
+
+const (
+	mcpEnsureUnchanged mcpEnsureStatus = iota
+	mcpEnsureCreated
+	mcpEnsureMerged
+)
+
+// ensureProjectMCPConfig guarantees .mcp.json at projectRoot (cwd when empty)
+// contains a "gossip" entry under mcpServers. It creates the file when
+// missing, merges a gossip entry into an existing file that lacks one, and
+// leaves a file that already has gossip untouched. It never overwrites other
+// MCP servers the user may have registered.
+func ensureProjectMCPConfig(projectRoot string) (string, mcpEnsureStatus, error) {
 	if projectRoot == "" {
 		wd, err := os.Getwd()
 		if err != nil {
-			return "", false, err
+			return "", mcpEnsureUnchanged, err
 		}
 		projectRoot = wd
 	}
 	path := filepath.Join(projectRoot, ".mcp.json")
-	if _, err := os.Stat(path); err == nil {
-		return path, false, nil
-	} else if !os.IsNotExist(err) {
-		return path, false, err
+
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		if !os.IsNotExist(err) {
+			return path, mcpEnsureUnchanged, err
+		}
+		body, marshalErr := marshalMCPBody(map[string]any{"gossip": gossipMCPServer})
+		if marshalErr != nil {
+			return path, mcpEnsureUnchanged, marshalErr
+		}
+		if err := os.WriteFile(path, body, 0o644); err != nil {
+			return path, mcpEnsureUnchanged, err
+		}
+		return path, mcpEnsureCreated, nil
 	}
-	if err := os.WriteFile(path, []byte(projectMCPConfig), 0o644); err != nil {
-		return path, false, err
+
+	var doc map[string]any
+	if len(raw) > 0 {
+		if err := json.Unmarshal(raw, &doc); err != nil {
+			return path, mcpEnsureUnchanged, fmt.Errorf("parse %s: %w", path, err)
+		}
 	}
-	return path, true, nil
+	if doc == nil {
+		doc = map[string]any{}
+	}
+	servers, _ := doc["mcpServers"].(map[string]any)
+	if servers == nil {
+		servers = map[string]any{}
+	}
+	if _, ok := servers["gossip"]; ok {
+		return path, mcpEnsureUnchanged, nil
+	}
+	servers["gossip"] = gossipMCPServer
+	doc["mcpServers"] = servers
+
+	body, err := marshalMCPBodyRaw(doc)
+	if err != nil {
+		return path, mcpEnsureUnchanged, err
+	}
+	if err := os.WriteFile(path, body, 0o644); err != nil {
+		return path, mcpEnsureUnchanged, err
+	}
+	return path, mcpEnsureMerged, nil
+}
+
+func marshalMCPBody(servers map[string]any) ([]byte, error) {
+	return marshalMCPBodyRaw(map[string]any{"mcpServers": servers})
+}
+
+func marshalMCPBodyRaw(doc map[string]any) ([]byte, error) {
+	body, err := json.MarshalIndent(doc, "", "  ")
+	if err != nil {
+		return nil, err
+	}
+	return append(body, '\n'), nil
 }
 
 // installPluginBundle writes the Gossip plugin bundle into the Claude Code

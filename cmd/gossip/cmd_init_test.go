@@ -3,6 +3,7 @@ package main
 import (
 	"archive/tar"
 	"bytes"
+	"encoding/json"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -213,44 +214,108 @@ func TestInstallPluginBundle_AggregatesErrorsWhenAllFail(t *testing.T) {
 
 func TestEnsureProjectMCPConfig_CreatesWhenMissing(t *testing.T) {
 	dir := t.TempDir()
-	path, created, err := ensureProjectMCPConfig(dir)
+	path, status, err := ensureProjectMCPConfig(dir)
 	if err != nil {
 		t.Fatalf("ensureProjectMCPConfig: %v", err)
 	}
-	if !created {
-		t.Fatalf("created=false on empty dir")
+	if status != mcpEnsureCreated {
+		t.Fatalf("status = %v, want created", status)
 	}
 	if path != filepath.Join(dir, ".mcp.json") {
 		t.Fatalf("path = %q", path)
 	}
-	body, err := os.ReadFile(path)
+	var doc struct {
+		McpServers map[string]struct {
+			Command string   `json:"command"`
+			Args    []string `json:"args"`
+		} `json:"mcpServers"`
+	}
+	raw, err := os.ReadFile(path)
 	if err != nil {
 		t.Fatalf("ReadFile: %v", err)
 	}
-	if !strings.Contains(string(body), `"command": "gossip"`) {
-		t.Errorf("mcp body missing gossip command: %s", body)
+	if err := json.Unmarshal(raw, &doc); err != nil {
+		t.Fatalf("parse: %v", err)
 	}
-	if !strings.Contains(string(body), `"args": ["claude"]`) {
-		t.Errorf("mcp body missing claude args: %s", body)
+	g, ok := doc.McpServers["gossip"]
+	if !ok {
+		t.Fatalf("gossip entry missing: %s", raw)
+	}
+	if g.Command != "gossip" {
+		t.Errorf("command = %q, want gossip", g.Command)
+	}
+	if !reflect.DeepEqual(g.Args, []string{"claude"}) {
+		t.Errorf("args = %v, want [claude]", g.Args)
 	}
 }
 
-func TestEnsureProjectMCPConfig_LeavesExistingUntouched(t *testing.T) {
+func TestEnsureProjectMCPConfig_LeavesGossipEntryUntouched(t *testing.T) {
 	dir := t.TempDir()
-	existing := `{"mcpServers":{"other":{"command":"foo"}}}`
+	existing := `{
+  "mcpServers": {
+    "gossip": { "command": "gossip", "args": ["claude"], "env": {"X": "y"} },
+    "other":  { "command": "foo" }
+  }
+}
+`
 	if err := os.WriteFile(filepath.Join(dir, ".mcp.json"), []byte(existing), 0o644); err != nil {
 		t.Fatalf("seed: %v", err)
 	}
-	_, created, err := ensureProjectMCPConfig(dir)
+	_, status, err := ensureProjectMCPConfig(dir)
 	if err != nil {
 		t.Fatalf("ensureProjectMCPConfig: %v", err)
 	}
-	if created {
-		t.Fatalf("created=true but file already exists")
+	if status != mcpEnsureUnchanged {
+		t.Fatalf("status = %v, want unchanged", status)
 	}
 	got, _ := os.ReadFile(filepath.Join(dir, ".mcp.json"))
 	if string(got) != existing {
-		t.Errorf("body mutated: got %q", got)
+		t.Errorf("body mutated:\ngot:  %s\nwant: %s", got, existing)
+	}
+}
+
+func TestEnsureProjectMCPConfig_MergesIntoFileMissingGossip(t *testing.T) {
+	dir := t.TempDir()
+	existing := `{"mcpServers":{"other":{"command":"foo","args":["bar"]}}}`
+	if err := os.WriteFile(filepath.Join(dir, ".mcp.json"), []byte(existing), 0o644); err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+	_, status, err := ensureProjectMCPConfig(dir)
+	if err != nil {
+		t.Fatalf("ensureProjectMCPConfig: %v", err)
+	}
+	if status != mcpEnsureMerged {
+		t.Fatalf("status = %v, want merged", status)
+	}
+	var doc struct {
+		McpServers map[string]struct {
+			Command string   `json:"command"`
+			Args    []string `json:"args"`
+		} `json:"mcpServers"`
+	}
+	raw, _ := os.ReadFile(filepath.Join(dir, ".mcp.json"))
+	if err := json.Unmarshal(raw, &doc); err != nil {
+		t.Fatalf("parse merged: %v\nbody: %s", err, raw)
+	}
+	if _, ok := doc.McpServers["other"]; !ok {
+		t.Errorf("pre-existing 'other' server dropped")
+	}
+	g, ok := doc.McpServers["gossip"]
+	if !ok {
+		t.Fatalf("gossip not merged in: %s", raw)
+	}
+	if g.Command != "gossip" || !reflect.DeepEqual(g.Args, []string{"claude"}) {
+		t.Errorf("merged gossip entry wrong: cmd=%q args=%v", g.Command, g.Args)
+	}
+}
+
+func TestEnsureProjectMCPConfig_RejectsInvalidJSON(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, ".mcp.json"), []byte("{this is not json"), 0o644); err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+	if _, _, err := ensureProjectMCPConfig(dir); err == nil {
+		t.Fatalf("expected error on invalid json")
 	}
 }
 
