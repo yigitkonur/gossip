@@ -31,9 +31,13 @@ archives:
     files:
       - README.md
       - LICENSE
-      - src: plugins/gossip/**/*
+      # Ship the plugin bundle under share/gossip/plugins/gossip/ so install.sh
+      # can drop it next to the binary. We pass the directory as src (no glob)
+      # and let goreleaser copy the subtree, preserving subdirs like
+      # .claude-plugin/ and commands/. The prior `src: plugins/gossip/**/*`
+      # with strip_parent: true flattened the tree and broke the layout.
+      - src: plugins/gossip
         dst: share/gossip/plugins/gossip
-        strip_parent: true
 
 checksum:
   # install.sh fetches checksums.txt alongside the archives.

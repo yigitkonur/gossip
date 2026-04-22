@@ -47,7 +47,14 @@ func Install(dst string) error {
 		if err := os.MkdirAll(filepath.Dir(target), 0o755); err != nil {
 			return err
 		}
-		out, err := os.Create(target)
+		// os.Create would use 0666 & ~umask, so under a permissive umask the
+		// plugin cache could end up group-writable. Pin file mode explicitly
+		// at 0644 for data files and bump to 0755 only for known shims.
+		mode := os.FileMode(0o644)
+		if isExecutableAsset(path) {
+			mode = 0o755
+		}
+		out, err := os.OpenFile(target, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, mode)
 		if err != nil {
 			return err
 		}
@@ -58,10 +65,11 @@ func Install(dst string) error {
 		if err := out.Close(); err != nil {
 			return err
 		}
-		if isExecutableAsset(path) {
-			if err := os.Chmod(target, 0o755); err != nil {
-				return err
-			}
+		// Re-chmod in case the file existed with different mode bits before
+		// OpenFile (which honors the existing permissions on a pre-existing
+		// file). Explicit chmod keeps the cache deterministic.
+		if err := os.Chmod(target, mode); err != nil {
+			return err
 		}
 		return nil
 	})

@@ -49,12 +49,16 @@ check: vet test build
 # ---------- release / cross-compile ----------
 
 # release-binary OS ARCH
+# The rm -rf before the cp -R keeps this idempotent: re-running release on an
+# existing dist folder previously nested plugins/gossip/gossip/... inside the
+# archive because cp -R appended to the existing dest directory.
 define release-binary
 	@mkdir -p $(DIST)/gossip_$(1)_$(2)
 	@echo "→ building $(1)/$(2)"
 	GOOS=$(1) GOARCH=$(2) CGO_ENABLED=0 go build $(GOFLAGS) \
 		-o $(DIST)/gossip_$(1)_$(2)/gossip ./cmd/gossip
 	@cp README.md LICENSE $(DIST)/gossip_$(1)_$(2)/ 2>/dev/null || true
+	@rm -rf $(DIST)/gossip_$(1)_$(2)/share/gossip/plugins/gossip
 	@mkdir -p $(DIST)/gossip_$(1)_$(2)/share/gossip/plugins
 	@cp -R plugins/gossip $(DIST)/gossip_$(1)_$(2)/share/gossip/plugins/gossip
 	tar -czf $(DIST)/gossip_$(VERSION:v%=%)_$(1)_$(2).tar.gz -C $(DIST) gossip_$(1)_$(2)

@@ -2,6 +2,7 @@ package pluginbundle
 
 import (
 	"crypto/sha256"
+	"encoding/hex"
 	"io"
 	"io/fs"
 	"os"
@@ -77,7 +78,7 @@ func TestBundleInSync(t *testing.T) {
 			if _, err := io.Copy(h, f); err != nil {
 				return err
 			}
-			out[filepath.ToSlash(rel)] = string(h.Sum(nil))
+			out[filepath.ToSlash(rel)] = hex.EncodeToString(h.Sum(nil))
 			return nil
 		}); err != nil {
 			t.Fatalf("walk %s: %v", root, err)
@@ -104,7 +105,7 @@ func TestBundleInSync(t *testing.T) {
 		if _, err := io.Copy(h, f); err != nil {
 			return err
 		}
-		embedHashes[path] = string(h.Sum(nil))
+		embedHashes[path] = hex.EncodeToString(h.Sum(nil))
 		return nil
 	}); err != nil {
 		t.Fatalf("walk embed: %v", err)

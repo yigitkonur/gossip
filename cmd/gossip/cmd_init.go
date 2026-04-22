@@ -182,7 +182,17 @@ func ensureProjectMCPConfig(projectRoot string) (string, mcpEnsureStatus, error)
 	if doc == nil {
 		doc = map[string]any{}
 	}
-	servers, _ := doc["mcpServers"].(map[string]any)
+	var servers map[string]any
+	if raw, exists := doc["mcpServers"]; exists {
+		typed, ok := raw.(map[string]any)
+		if !ok {
+			// Refuse to silently replace a non-object mcpServers — that would
+			// silently drop user data. Surface it instead; the user can fix
+			// the file by hand.
+			return path, mcpEnsureUnchanged, fmt.Errorf("%s: mcpServers is not an object (got %T); refusing to overwrite", path, raw)
+		}
+		servers = typed
+	}
 	if servers == nil {
 		servers = map[string]any{}
 	}
@@ -233,11 +243,20 @@ func installPluginBundle() (string, error) {
 
 	var errs []string
 
+	// Each fallback writes into dst. If a fallback fails midway (local copy
+	// failure after partial writes, embed extract aborting on disk full,
+	// etc.) we wipe dst before the next attempt so the next writer starts
+	// from a clean slate. Otherwise a half-written local copy plus a
+	// subsequent embed write could leave a mix of files from different
+	// sources.
+	cleanDst := func() { _ = os.RemoveAll(dst) }
+
 	if src, err := initPluginSourceDir(); err == nil {
 		if copyErr := initPluginCopyDir(src, dst); copyErr == nil {
 			return "local checkout", nil
 		} else {
 			errs = append(errs, fmt.Sprintf("local: %v", copyErr))
+			cleanDst()
 		}
 	} else {
 		errs = append(errs, fmt.Sprintf("local: %v", err))
@@ -247,12 +266,14 @@ func installPluginBundle() (string, error) {
 		return "embedded bundle", nil
 	} else {
 		errs = append(errs, fmt.Sprintf("embed: %v", embedErr))
+		cleanDst()
 	}
 
 	if fetchErr := initPluginFetchRemote(dst); fetchErr == nil {
 		return "github release", nil
 	} else {
 		errs = append(errs, fmt.Sprintf("remote: %v", fetchErr))
+		cleanDst()
 	}
 
 	return "", fmt.Errorf("no plugin source succeeded (%s)", strings.Join(errs, "; "))
@@ -332,6 +353,12 @@ func releaseTag() string {
 	return v
 }
 
+// maxPluginTarballBytes caps the compressed download size for the GitHub
+// fallback. The canonical bundle is <30 KiB; 50 MiB is four orders of
+// magnitude of headroom and still keeps us safe against a hostile or
+// mirror-corrupted archive under a user-supplied GOSSIP_PLUGIN_BUNDLE_URL.
+const maxPluginTarballBytes = 50 * 1024 * 1024
+
 func downloadAndExtractPluginBundle(url, dst string) error {
 	client := &http.Client{Timeout: 30 * time.Second}
 	resp, err := client.Get(url)
@@ -342,7 +369,7 @@ func downloadAndExtractPluginBundle(url, dst string) error {
 	if resp.StatusCode != http.StatusOK {
 		return fmt.Errorf("http %d", resp.StatusCode)
 	}
-	gz, err := gzip.NewReader(resp.Body)
+	gz, err := gzip.NewReader(io.LimitReader(resp.Body, maxPluginTarballBytes))
 	if err != nil {
 		return err
 	}
@@ -377,8 +404,13 @@ func extractPluginBundleFromTar(tr *tar.Reader, dst string) error {
 		if rel == "" {
 			continue
 		}
-		if strings.Contains(rel, "..") {
-			return fmt.Errorf("refusing path traversal: %s", hdr.Name)
+		// Component-aware traversal check: reject any path segment that is
+		// exactly "..". A substring match on ".." would reject legitimate
+		// filenames like "foo..bar".
+		for _, seg := range strings.Split(rel, "/") {
+			if seg == ".." {
+				return fmt.Errorf("refusing path traversal: %s", hdr.Name)
+			}
 		}
 		target := filepath.Join(dst, rel)
 		switch hdr.Typeflag {

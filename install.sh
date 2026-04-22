@@ -208,7 +208,10 @@ install_plugin_bundle() {
   if [ -z "$bundle_src" ]; then
     return 0
   fi
-  local prefix="$INSTALL_DIR"
+  # Normalize INSTALL_DIR before the */bin check: a trailing slash would
+  # skip the strip and park the bundle under <dir>/bin/share/... instead of
+  # <prefix>/share/...
+  local prefix="${INSTALL_DIR%/}"
   case "$prefix" in
     */bin) prefix="${prefix%/bin}" ;;
   esac

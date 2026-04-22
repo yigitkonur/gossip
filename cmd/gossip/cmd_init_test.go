@@ -107,13 +107,21 @@ func overrideInitTestHooks(t *testing.T, execFn func(string, ...string) (string,
 	prevExec := initExecCommand
 	prevHome := initUserHomeDir
 	prevPlugin := initPluginSourceDir
+	prevEmbed := initPluginEmbedWrite
+	prevFetch := initPluginFetchRemote
 	initExecCommand = execFn
 	initUserHomeDir = homeFn
 	initPluginSourceDir = pluginFn
+	// Leave the embed + fetch seams at their production values by default; if
+	// a specific test wants to override them it does so directly and restores
+	// them on its own defer. Saving them here ensures no test can leak a stub
+	// into a later test run through this shared helper.
 	return func() {
 		initExecCommand = prevExec
 		initUserHomeDir = prevHome
 		initPluginSourceDir = prevPlugin
+		initPluginEmbedWrite = prevEmbed
+		initPluginFetchRemote = prevFetch
 	}
 }
 
@@ -380,8 +388,13 @@ func TestExtractPluginBundleFromTar_OnlyCopiesPluginsGossip(t *testing.T) {
 	if info.Mode().Perm()&0o111 == 0 {
 		t.Errorf("shim not executable: %v", info.Mode())
 	}
-	if _, err := os.Stat(filepath.Join(dst, "..", "README.md")); !os.IsNotExist(err) && err != nil {
-		// no-op: repo README must NOT land under dst's parent — spot-check.
+	// The repo-level README ("repo readme" entry under gossip-0.2.0/README.md)
+	// must NOT leak out of the plugins/gossip/ filter. Stat the sibling of
+	// dst that would receive it if filtering were broken.
+	if _, err := os.Stat(filepath.Join(dst, "..", "README.md")); err == nil {
+		t.Errorf("repo README leaked above plugin bundle root — extractor filter is broken")
+	} else if !os.IsNotExist(err) {
+		t.Errorf("unexpected stat error on leak check: %v", err)
 	}
 }
 
