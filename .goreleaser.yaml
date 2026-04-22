@@ -30,6 +30,9 @@ archives:
     files:
       - LICENSE
       - README.md
+      - src: plugins/gossip/**/*
+        dst: share/gossip/plugins/gossip
+        strip_parent: true
 
 checksum:
   name_template: 'checksums.txt'

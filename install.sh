@@ -196,6 +196,37 @@ install_binary() {
   install -m 0755 "$src" "$dst"
 }
 
+# install_plugin_bundle copies share/gossip/plugins/gossip/ from the extracted
+# tarball to <prefix>/share/gossip/plugins/gossip/. The prefix is derived from
+# the binary install directory (strips trailing /bin if present). Failures are
+# non-fatal — the embedded bundle inside the gossip binary is the source of
+# truth; this on-disk copy is a convenience for inspection and offline envs.
+install_plugin_bundle() {
+  local extract_root="$1"
+  local bundle_src
+  bundle_src="$(find "$extract_root" -type d -path '*/share/gossip/plugins/gossip' | head -n 1)"
+  if [ -z "$bundle_src" ]; then
+    return 0
+  fi
+  local prefix="$INSTALL_DIR"
+  case "$prefix" in
+    */bin) prefix="${prefix%/bin}" ;;
+  esac
+  local bundle_dst="${prefix}/share/gossip/plugins/gossip"
+  if ! mkdir -p "$bundle_dst" 2>/dev/null; then
+    warn "cannot create ${bundle_dst} — plugin bundle not installed on disk (embedded copy still works)"
+    return 0
+  fi
+  if ! can_write "$bundle_dst"; then
+    warn "cannot write ${bundle_dst} — plugin bundle not installed on disk (embedded copy still works)"
+    return 0
+  fi
+  # Use tar to preserve modes and dotfiles atomically.
+  ( cd "$bundle_src" && tar -cf - . ) | ( cd "$bundle_dst" && tar -xf - ) \
+    || { warn "failed to copy plugin bundle to ${bundle_dst}"; return 0; }
+  ok "plugin bundle    : ${C_BOLD}${bundle_dst}${C_RESET}"
+}
+
 uninstall() {
   local dst="${INSTALL_DIR}/${BINARY_NAME}"
   if [ ! -e "$dst" ]; then
@@ -264,6 +295,8 @@ extracted_bin="$(find "$tmp/extract" -type f -name "${BINARY_NAME}" -perm -u+x |
 
 install_binary "$extracted_bin" "$dst"
 ok "installed ${C_BOLD}${dst}${C_RESET}"
+
+install_plugin_bundle "$tmp/extract"
 
 if command -v "$BINARY_NAME" >/dev/null 2>&1; then
   ok "gossip version: ${C_BOLD}$(installed_version || echo unknown)${C_RESET}"

@@ -31,6 +31,9 @@ archives:
     files:
       - README.md
       - LICENSE
+      - src: plugins/gossip/**/*
+        dst: share/gossip/plugins/gossip
+        strip_parent: true
 
 checksum:
   # install.sh fetches checksums.txt alongside the archives.
