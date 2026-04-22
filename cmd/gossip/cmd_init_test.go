@@ -211,6 +211,49 @@ func TestInstallPluginBundle_AggregatesErrorsWhenAllFail(t *testing.T) {
 	}
 }
 
+func TestEnsureProjectMCPConfig_CreatesWhenMissing(t *testing.T) {
+	dir := t.TempDir()
+	path, created, err := ensureProjectMCPConfig(dir)
+	if err != nil {
+		t.Fatalf("ensureProjectMCPConfig: %v", err)
+	}
+	if !created {
+		t.Fatalf("created=false on empty dir")
+	}
+	if path != filepath.Join(dir, ".mcp.json") {
+		t.Fatalf("path = %q", path)
+	}
+	body, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("ReadFile: %v", err)
+	}
+	if !strings.Contains(string(body), `"command": "gossip"`) {
+		t.Errorf("mcp body missing gossip command: %s", body)
+	}
+	if !strings.Contains(string(body), `"args": ["claude"]`) {
+		t.Errorf("mcp body missing claude args: %s", body)
+	}
+}
+
+func TestEnsureProjectMCPConfig_LeavesExistingUntouched(t *testing.T) {
+	dir := t.TempDir()
+	existing := `{"mcpServers":{"other":{"command":"foo"}}}`
+	if err := os.WriteFile(filepath.Join(dir, ".mcp.json"), []byte(existing), 0o644); err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+	_, created, err := ensureProjectMCPConfig(dir)
+	if err != nil {
+		t.Fatalf("ensureProjectMCPConfig: %v", err)
+	}
+	if created {
+		t.Fatalf("created=true but file already exists")
+	}
+	got, _ := os.ReadFile(filepath.Join(dir, ".mcp.json"))
+	if string(got) != existing {
+		t.Errorf("body mutated: got %q", got)
+	}
+}
+
 func TestReleaseTag_StripsDevBuilds(t *testing.T) {
 	cases := map[string]string{
 		"0.2.0":      "v0.2.0",

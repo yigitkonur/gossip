@@ -54,11 +54,18 @@ func runInit(out io.Writer) error {
 	if err != nil {
 		return err
 	}
+	mcpPath, mcpCreated, err := ensureProjectMCPConfig("")
+	if err != nil {
+		return err
+	}
+	if mcpCreated {
+		created = append(created, mcpPath)
+	}
 
 	fmt.Fprintln(out, paintedBanner())
 	fmt.Fprintln(out, ui.bold("Project config:"))
 	if len(created) == 0 {
-		fmt.Fprintln(out, "  "+ui.yellow("⚠️")+" No files created — .gossip/ already populated.")
+		fmt.Fprintln(out, "  "+ui.yellow("⚠️")+" No files created — project already configured.")
 	} else {
 		for _, p := range created {
 			fmt.Fprintf(out, "  %s Created: %s\n", ui.green("✅"), ui.cyan(p))
@@ -114,6 +121,44 @@ func runInit(out io.Writer) error {
 	fmt.Fprintln(out, "  2. Start Claude Code:  gossip claude")
 	fmt.Fprintln(out, "  3. Start Codex TUI:    gossip codex")
 	return nil
+}
+
+// projectMCPConfig is the project-level .mcp.json body that Claude Code reads
+// from the current working directory. It launches `gossip claude` as a stdio
+// MCP server, so the bridge is scoped per-project and survives without the
+// cache-registered plugin.
+const projectMCPConfig = `{
+  "mcpServers": {
+    "gossip": {
+      "command": "gossip",
+      "args": ["claude"]
+    }
+  }
+}
+`
+
+// ensureProjectMCPConfig writes .mcp.json at projectRoot (cwd when empty) if
+// it does not already exist. Returns the absolute path and whether it was
+// just created. Leaves existing .mcp.json untouched — the user may have
+// merged other MCP servers into it.
+func ensureProjectMCPConfig(projectRoot string) (string, bool, error) {
+	if projectRoot == "" {
+		wd, err := os.Getwd()
+		if err != nil {
+			return "", false, err
+		}
+		projectRoot = wd
+	}
+	path := filepath.Join(projectRoot, ".mcp.json")
+	if _, err := os.Stat(path); err == nil {
+		return path, false, nil
+	} else if !os.IsNotExist(err) {
+		return path, false, err
+	}
+	if err := os.WriteFile(path, []byte(projectMCPConfig), 0o644); err != nil {
+		return path, false, err
+	}
+	return path, true, nil
 }
 
 // installPluginBundle writes the Gossip plugin bundle into the Claude Code
