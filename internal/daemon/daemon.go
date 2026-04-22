@@ -69,11 +69,12 @@ type Options struct {
 type Daemon struct {
 	opts Options
 
-	codex    *codex.Client
-	proxy    *codex.Proxy
-	control  *control.Server
-	tuiState *tui.State
-	filter   filter.Mode
+	codex     *codex.Client
+	proxy     *codex.Proxy
+	control   *control.Server
+	tuiState  *tui.State
+	filter    filter.Mode
+	loopQueue *LoopQueue
 
 	statusBuf *filter.StatusBuffer
 	stateMu   sync.Mutex
@@ -219,6 +220,18 @@ func (d *Daemon) Run(ctx context.Context) error {
 
 	d.control = control.NewServer(d)
 	d.statusBuf = filter.NewStatusBuffer(d.onStatusFlush, filter.StatusBufferOptions{})
+	d.loopQueue = NewLoopQueue(
+		func(ctx context.Context, text string, requireReply bool) (bool, string) {
+			return d.OnClaudeToCodex(ctx, protocol.BridgeMessage{
+				ID:        fmt.Sprintf("loop_%d", time.Now().UnixMilli()),
+				Source:    protocol.SourceClaude,
+				Content:   text,
+				Timestamp: time.Now().UnixMilli(),
+			}, requireReply)
+		},
+		func() bool { return d.tuiState.CanReply() },
+		d.opts.Logger,
+	)
 
 	// These fields (codex, proxy, control, statusBuf) are assigned above and
 	// never modified after this point. The go statement inside errgroup.Go()
@@ -291,6 +304,9 @@ func (d *Daemon) handleCodexEvent(ctx context.Context, ev codex.Event) {
 		d.tuiState.MarkBridgeReady()
 		d.bridgeReadyAt.Store(time.Now().UnixMilli())
 		d.broadcastSystem(ctx, "system_ready", d.currentReadyMessage(ev.ThreadID))
+		if d.loopQueue != nil {
+			d.loopQueue.DrainForTUI(ctx)
+		}
 	case codex.EventTurnStarted:
 		d.broadcastSystem(ctx, "system_turn_started", turnStartedMessage)
 	case codex.EventTurnCompleted:
@@ -303,6 +319,9 @@ func (d *Daemon) handleCodexEvent(ctx context.Context, ev codex.Event) {
 		d.stateMu.Unlock()
 		if replyRequired && !replyReceived {
 			d.broadcastSystem(ctx, "system_reply_missing", replyMissingMessage)
+			if d.loopQueue != nil {
+				d.loopQueue.OnTurnCompletedWithoutReply()
+			}
 		}
 		d.broadcastSystem(ctx, "system_turn_completed", "✅ Codex finished the current turn. You can reply now if needed.")
 		d.startAttentionWindow(0)
@@ -310,6 +329,12 @@ func (d *Daemon) handleCodexEvent(ctx context.Context, ev codex.Event) {
 		msg, ok := ev.MessageToBridge()
 		if !ok {
 			return
+		}
+		// Loop-queue correlation: any [IMPORTANT]-marked Codex agentMessage
+		// resolves the currently-active blocking send (if any). No-op when
+		// the queue has nothing active, so non-loop traffic is unaffected.
+		if marker, _ := filter.ParseMarker(msg.Content); marker == filter.MarkerImportant && d.loopQueue != nil {
+			d.loopQueue.OnAgentMessage(msg.Content)
 		}
 		d.stateMu.Lock()
 		replyRequired := d.replyRequired
@@ -554,6 +579,24 @@ func (d *Daemon) OnClaudeToCodex(ctx context.Context, msg protocol.BridgeMessage
 		d.clearAttentionWindow("claude replied")
 	}
 	return ok, errMsg
+}
+
+// OnClaudeToCodexBlocking enqueues a Claude→Codex send that waits for an
+// [IMPORTANT]-marked Codex reply. When the bridge is not yet ready (Codex
+// TUI has not attached or no thread exists), the send is queued in memory
+// and flushed automatically on EventThreadReady; callers always receive a
+// result within waitMs (either the reply text, a timeout, or a send error).
+func (d *Daemon) OnClaudeToCodexBlocking(ctx context.Context, msg protocol.BridgeMessage, requireReply bool, waitMs int) (string, bool, string) {
+	if d.loopQueue == nil {
+		return "", false, "loop queue not initialized"
+	}
+	_, replyCh := d.loopQueue.Enqueue(ctx, msg.Content, requireReply, waitMs)
+	select {
+	case r := <-replyCh:
+		return r.Text, r.Received, r.Error
+	case <-ctx.Done():
+		return "", false, "context cancelled waiting for Codex reply"
+	}
 }
 
 func (d *Daemon) Snapshot() control.Status {

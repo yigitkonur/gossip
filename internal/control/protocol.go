@@ -13,6 +13,7 @@ type ClientMessage struct {
 	RequestID    string                  `json:"requestId,omitempty"`
 	Message      *protocol.BridgeMessage `json:"message,omitempty"`
 	RequireReply bool                    `json:"requireReply,omitempty"`
+	WaitMs       int                     `json:"waitMs,omitempty"`
 }
 
 // ServerMessage is a daemon-to-bridge message.
@@ -23,18 +24,26 @@ type ServerMessage struct {
 	Success   bool                    `json:"success,omitempty"`
 	Error     string                  `json:"error,omitempty"`
 	Status    *Status                 `json:"status,omitempty"`
+	// Fields used by the ServerMsgClaudeToCodexReply envelope sent in
+	// response to ClientMsgClaudeToCodexBlocking. Text holds Codex's
+	// agentMessage body, Received is true when Codex actually replied
+	// (false on timeout, turn-completed-without-reply, or send failure).
+	Text     string `json:"text,omitempty"`
+	Received bool   `json:"received,omitempty"`
 }
 
 const (
-	ClientMsgClaudeConnect    = "claude_connect"
-	ClientMsgClaudeDisconnect = "claude_disconnect"
-	ClientMsgClaudeToCodex    = "claude_to_codex"
-	ClientMsgStatus           = "status"
+	ClientMsgClaudeConnect         = "claude_connect"
+	ClientMsgClaudeDisconnect      = "claude_disconnect"
+	ClientMsgClaudeToCodex         = "claude_to_codex"
+	ClientMsgClaudeToCodexBlocking = "claude_to_codex_blocking"
+	ClientMsgStatus                = "status"
 )
 
 const (
 	ServerMsgCodexToClaude       = "codex_to_claude"
 	ServerMsgClaudeToCodexResult = "claude_to_codex_result"
+	ServerMsgClaudeToCodexReply  = "claude_to_codex_reply"
 	ServerMsgStatus              = "status"
 )
 

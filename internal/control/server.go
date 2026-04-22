@@ -15,6 +15,10 @@ type Handler interface {
 	OnClaudeConnect()
 	OnClaudeDisconnect(reason string)
 	OnClaudeToCodex(ctx context.Context, msg protocol.BridgeMessage, requireReply bool) (success bool, errorMsg string)
+	// OnClaudeToCodexBlocking injects a message into Codex via the outbound
+	// queue and blocks (up to waitMs) for an [IMPORTANT]-marked reply.
+	// Returns the reply body, whether it actually arrived, and any error.
+	OnClaudeToCodexBlocking(ctx context.Context, msg protocol.BridgeMessage, requireReply bool, waitMs int) (text string, received bool, errorMsg string)
 	Snapshot() Status
 }
 
@@ -190,6 +194,19 @@ func (s *Server) handleClientMessage(ctx context.Context, c *controlConn, msg Cl
 		}
 		ok, errMsg := s.handler.OnClaudeToCodex(ctx, *msg.Message, msg.RequireReply)
 		_ = c.write(ctx, ServerMessage{Type: ServerMsgClaudeToCodexResult, RequestID: msg.RequestID, Success: ok, Error: errMsg})
+	case ClientMsgClaudeToCodexBlocking:
+		s.mu.Lock()
+		isAttached := s.attached == c
+		s.mu.Unlock()
+		if !isAttached {
+			return
+		}
+		if msg.Message == nil {
+			_ = c.write(ctx, ServerMessage{Type: ServerMsgClaudeToCodexReply, RequestID: msg.RequestID, Received: false, Error: "missing message"})
+			return
+		}
+		text, received, errMsg := s.handler.OnClaudeToCodexBlocking(ctx, *msg.Message, msg.RequireReply, msg.WaitMs)
+		_ = c.write(ctx, ServerMessage{Type: ServerMsgClaudeToCodexReply, RequestID: msg.RequestID, Text: text, Received: received, Error: errMsg})
 	case ClientMsgStatus:
 		s.mu.Lock()
 		isAttached := s.attached == c

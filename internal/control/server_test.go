@@ -19,6 +19,9 @@ type testHandler struct {
 	connects    int
 	disconnects []string
 	replies     []protocol.BridgeMessage
+	blocking    []protocol.BridgeMessage
+	blockReply  string
+	blockOK     bool
 	status      Status
 }
 
@@ -33,6 +36,12 @@ func (h *testHandler) OnClaudeToCodex(_ context.Context, msg protocol.BridgeMess
 	defer h.mu.Unlock()
 	h.replies = append(h.replies, msg)
 	return true, ""
+}
+func (h *testHandler) OnClaudeToCodexBlocking(_ context.Context, msg protocol.BridgeMessage, _ bool, _ int) (string, bool, string) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	h.blocking = append(h.blocking, msg)
+	return h.blockReply, h.blockOK, ""
 }
 func (h *testHandler) Snapshot() Status { return h.status }
 

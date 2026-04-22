@@ -95,6 +95,40 @@ func (c *Client) SendReply(ctx context.Context, msg protocol.BridgeMessage, requ
 	}
 }
 
+// SendReplyBlocking injects a message into Codex via the daemon's outbound
+// loop queue and waits for an [IMPORTANT]-marked reply (or timeout / send
+// failure). Callers pass waitMs; the client adds a 10-second margin before
+// giving up at its own layer to let the daemon's timer fire first.
+func (c *Client) SendReplyBlocking(ctx context.Context, msg protocol.BridgeMessage, requireReply bool, waitMs int) (text string, received bool, errMsg string) {
+	id := fmt.Sprintf("blk_%d_%d", time.Now().UnixMilli(), c.nextReq.Add(1))
+	resp := make(chan ServerMessage, 1)
+	c.mu.Lock()
+	c.pending[id] = resp
+	c.mu.Unlock()
+	defer func() {
+		c.mu.Lock()
+		delete(c.pending, id)
+		c.mu.Unlock()
+	}()
+
+	if err := c.send(ctx, ClientMessage{Type: ClientMsgClaudeToCodexBlocking, RequestID: id, Message: &msg, RequireReply: requireReply, WaitMs: waitMs}); err != nil {
+		return "", false, err.Error()
+	}
+
+	margin := waitMs + 10_000
+	if margin <= 0 {
+		margin = 120_000
+	}
+	callCtx, cancel := context.WithTimeout(ctx, time.Duration(margin)*time.Millisecond)
+	defer cancel()
+	select {
+	case m := <-resp:
+		return m.Text, m.Received, m.Error
+	case <-callCtx.Done():
+		return "", false, "timed out waiting for daemon blocking reply"
+	}
+}
+
 // Disconnect closes the connection gracefully.
 func (c *Client) Disconnect() {
 	c.mu.Lock()
@@ -250,7 +284,7 @@ func (c *Client) handleServerMessage(msg ServerMessage) {
 		if msg.Message != nil && c.opts.OnCodexMsg != nil {
 			c.opts.OnCodexMsg(*msg.Message)
 		}
-	case ServerMsgClaudeToCodexResult:
+	case ServerMsgClaudeToCodexResult, ServerMsgClaudeToCodexReply:
 		c.mu.Lock()
 		ch, ok := c.pending[msg.RequestID]
 		c.mu.Unlock()
