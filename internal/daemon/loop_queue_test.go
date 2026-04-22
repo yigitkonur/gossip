@@ -210,3 +210,15 @@ func TestLoopQueue_ErrorTextPassthrough(t *testing.T) {
 	_ = errors.New
 	_ = fmt.Sprintf
 }
+
+// ---------- daemon-level integration ----------
+
+// These tests verify the wiring between the daemon's event loop and the
+// loop queue: [IMPORTANT] messages flow through to OnAgentMessage, turn-
+// completed-without-reply flows through, and EventThreadReady triggers
+// DrainForTUI.
+//
+// They construct a Daemon manually (no real codex client / control server)
+// and initialize just the loopQueue. The same pattern the existing
+// daemon_reply_test.go tests use for replyRequired coverage.
+
