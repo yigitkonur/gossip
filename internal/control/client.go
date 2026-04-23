@@ -115,10 +115,15 @@ func (c *Client) SendReplyBlocking(ctx context.Context, msg protocol.BridgeMessa
 		return "", false, err.Error()
 	}
 
-	margin := waitMs + 10_000
-	if margin <= 0 {
-		margin = 120_000
+	// Normalize waitMs first so a zero or negative caller value matches
+	// the daemon's 90 s fallback before we add the 10 s WS round-trip
+	// margin. Without this the client would time out long before the
+	// daemon's timer could fire.
+	effectiveWaitMs := waitMs
+	if effectiveWaitMs <= 0 {
+		effectiveWaitMs = 90_000
 	}
+	margin := effectiveWaitMs + 10_000
 	callCtx, cancel := context.WithTimeout(ctx, time.Duration(margin)*time.Millisecond)
 	defer cancel()
 	select {

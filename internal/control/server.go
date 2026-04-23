@@ -203,8 +203,18 @@ func (s *Server) handleClientMessage(ctx context.Context, c *controlConn, msg Cl
 			_ = c.write(ctx, ServerMessage{Type: ServerMsgClaudeToCodexReply, RequestID: msg.RequestID, Received: false, Error: "missing message"})
 			return
 		}
-		text, received, errMsg := s.handler.OnClaudeToCodexBlocking(ctx, *msg.Message, msg.RequireReply, msg.WaitMs)
-		_ = c.write(ctx, ServerMessage{Type: ServerMsgClaudeToCodexReply, RequestID: msg.RequestID, Text: text, Received: received, Error: errMsg})
+		// Dispatch the (potentially ~90 s) blocking handler in a goroutine
+		// so this connection's read loop keeps serving other client
+		// messages — otherwise concurrent status/connect/disconnect
+		// operations would starve for the full Codex turn.
+		blockMsg := *msg.Message
+		requestID := msg.RequestID
+		requireReply := msg.RequireReply
+		waitMs := msg.WaitMs
+		go func() {
+			text, received, errMsg := s.handler.OnClaudeToCodexBlocking(ctx, blockMsg, requireReply, waitMs)
+			_ = c.write(ctx, ServerMessage{Type: ServerMsgClaudeToCodexReply, RequestID: requestID, Text: text, Received: received, Error: errMsg})
+		}()
 	case ClientMsgStatus:
 		s.mu.Lock()
 		isAttached := s.attached == c

@@ -625,16 +625,18 @@ func ensureProjectClaudeSettings(projectRoot string) (string, claudeSettingsStat
 }
 
 // mergeGossipHookEntries returns the list of hook entries for a single
-// event with gossip's canonical entries applied. Any existing entry whose
-// nested hooks command starts with "gossip hook " is stripped first, so
-// re-running init after editing the hook command upgrades cleanly.
-// changed is true iff the resulting JSON differs from existing.
+// event with gossip's canonical entries applied. Entries are filtered at
+// the *inner hooks* granularity — a user entry that mixes gossip and
+// non-gossip command strings keeps its non-gossip hooks (only the gossip
+// inner-hooks are stripped). An entry whose inner-hooks list becomes
+// empty after the strip is dropped entirely. changed is true iff the
+// resulting JSON differs from existing.
 func mergeGossipHookEntries(existing any, gossipEntries []any) ([]any, bool) {
 	var out []any
 	if list, ok := existing.([]any); ok {
 		for _, e := range list {
-			if !entryContainsGossipHook(e) {
-				out = append(out, e)
+			if filtered, keep := stripGossipInnerHooks(e); keep {
+				out = append(out, filtered)
 			}
 		}
 	}
@@ -642,23 +644,54 @@ func mergeGossipHookEntries(existing any, gossipEntries []any) ([]any, bool) {
 	return out, !sameShape(existing, out)
 }
 
-func entryContainsGossipHook(entry any) bool {
+// stripGossipInnerHooks removes inner hook objects whose `command` starts
+// with "gossip hook " from an entry, preserving unrelated inner hooks. It
+// returns the (possibly mutated) entry and whether the entry should be
+// kept. An entry whose inner hooks list becomes empty after the strip is
+// not kept (caller drops it). An entry that is not a map is returned
+// as-is so we never accidentally discard something we don't understand.
+func stripGossipInnerHooks(entry any) (any, bool) {
 	m, ok := entry.(map[string]any)
 	if !ok {
-		return false
+		return entry, true
 	}
-	hooks, _ := m["hooks"].([]any)
-	for _, h := range hooks {
+	innerRaw, present := m["hooks"]
+	if !present {
+		return entry, true
+	}
+	list, ok := innerRaw.([]any)
+	if !ok {
+		return entry, true
+	}
+	var kept []any
+	anyDropped := false
+	for _, h := range list {
 		hm, ok := h.(map[string]any)
 		if !ok {
+			kept = append(kept, h)
 			continue
 		}
 		cmd, _ := hm["command"].(string)
 		if strings.HasPrefix(cmd, "gossip hook ") {
-			return true
+			anyDropped = true
+			continue
 		}
+		kept = append(kept, h)
 	}
-	return false
+	if !anyDropped {
+		return entry, true
+	}
+	if len(kept) == 0 {
+		return nil, false
+	}
+	// Build a shallow copy so we don't mutate the caller's map while
+	// other code may still read it.
+	copied := make(map[string]any, len(m))
+	for k, v := range m {
+		copied[k] = v
+	}
+	copied["hooks"] = kept
+	return copied, true
 }
 
 func sameShape(a, b any) bool {
@@ -699,14 +732,19 @@ func runUninstall(out io.Writer) error {
 	}
 
 	gossipDir := filepath.Join(wd, ".gossip")
-	if _, err := os.Stat(gossipDir); err == nil {
+	if _, statErr := os.Stat(gossipDir); statErr == nil {
 		if err := os.RemoveAll(gossipDir); err != nil {
 			fmt.Fprintf(out, "  %s %s: %v\n", ui.yellow("⚠️"), gossipDir, err)
 		} else {
 			fmt.Fprintf(out, "  %s Removed %s\n", ui.green("✅"), ui.cyan(gossipDir))
 		}
-	} else {
+	} else if os.IsNotExist(statErr) {
 		fmt.Fprintf(out, "  %s %s: already absent\n", ui.yellow("·"), gossipDir)
+	} else {
+		// Permission / IO error on stat — do not silently report as
+		// "absent". Surface it so the user knows the uninstall was
+		// incomplete.
+		fmt.Fprintf(out, "  %s %s: %v\n", ui.yellow("⚠️"), gossipDir, statErr)
 	}
 
 	fmt.Fprintln(out)
@@ -740,11 +778,18 @@ func stripGossipHooksFromSettings(path string) (bool, error) {
 		}
 		var kept []any
 		for _, e := range list {
-			if entryContainsGossipHook(e) {
+			filtered, keep := stripGossipInnerHooks(e)
+			if !keep {
 				changed = true
 				continue
 			}
-			kept = append(kept, e)
+			// stripGossipInnerHooks returns a new map when it modified
+			// the inner hooks, or the original value otherwise. Compare
+			// shapes to detect in-place mutations accurately.
+			if !sameShape(e, filtered) {
+				changed = true
+			}
+			kept = append(kept, filtered)
 		}
 		if len(kept) == 0 {
 			delete(hooks, event)

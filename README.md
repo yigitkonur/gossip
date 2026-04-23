@@ -159,7 +159,7 @@ Gossip is five layers wearing one binary:
    The daemon keeps one WebSocket open to `codex app-server`. That's the upstream authority on threads, turns, and tool calls.
 
 5. **Hook layer** (`gossip hook …`, wired into `.claude/settings.json` by `gossip init`)
-   Short-lived subprocesses Claude Code spawns at `SessionStart` and `Stop`. They read the live session transcript, detect the `[COMPLETION]` tag, and drive the autonomous review cycle with Codex via the daemon's blocking queue. No state of their own; all state lives in the daemon or in `.gossip/loop-state.json`.
+   Short-lived subprocesses Claude Code spawns at `SessionStart` and `Stop`. They read the live session transcript, detect the `[COMPLETION]` tag, and drive the autonomous review cycle with Codex via the daemon's blocking queue. No state of their own; all state lives in the daemon or in `<state-dir>/loop-state.json` (per-user, not per-project — see the State directory bullet below).
 
 Message path, visualised:
 

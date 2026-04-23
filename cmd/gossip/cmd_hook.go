@@ -136,13 +136,20 @@ func runHookSessionStart(ctx context.Context, stdin io.Reader, stdout io.Writer)
 	return writeJSON(stdout, out)
 }
 
-// runHookStop implements the completion-loop decision table. See
-// /Users/yigitkonur/.claude/plans/completion-etiketi-varsa-mesela-linear-hamster.md
-// §4 for the prose version; this function is the faithful translation.
+// runHookStop implements the completion-loop decision table — the faithful
+// translation of the prose specification in the project plan doc.
 func runHookStop(ctx context.Context, stdin io.Reader, stdout io.Writer) error {
 	in, err := parseStopInput(stdin)
 	if err != nil {
 		return nil // fail-open: stay invisible to Claude Code
+	}
+	// Early return on Claude Code's recursion guard. Once we emit
+	// decision:block, subsequent Stops in the same continuation chain set
+	// stop_hook_active=true; bailing immediately prevents unbounded
+	// re-entry if Claude somehow preserves [COMPLETION] in a response we
+	// crafted for approval/escalation continuation.
+	if in.StopHookActive {
+		return nil
 	}
 	if os.Getenv("GOSSIP_LOOP_DISABLE") != "" {
 		return nil
@@ -170,8 +177,18 @@ func runHookStop(ctx context.Context, stdin io.Reader, stdout io.Writer) error {
 	_ = sd.Ensure()
 	statePath := sd.LoopStateFile()
 
-	var decision stopHookDecision
-	err = loopstate.WithLock(statePath, func(s *loopstate.State) error {
+	completionTag := primaryTag(cfg.Loop.CompletionTags, "COMPLETION")
+	approvalInstruction := renderApprovalInstruction(cfg.Loop.ApprovalTags)
+
+	// Step 1 (locked): read+reset state, check cap, reserve an iteration.
+	type prepared struct {
+		skip         bool // cap hit; bridge call is skipped
+		skipDecision stopHookDecision
+		iteration    int
+		maxIter      int
+	}
+	var prep prepared
+	if err := loopstate.WithLock(statePath, func(s *loopstate.State) error {
 		if s.SessionID != in.SessionID {
 			*s = loopstate.Reset(in.SessionID, cfg.Loop.MaxIterations)
 		}
@@ -179,24 +196,41 @@ func runHookStop(ctx context.Context, stdin io.Reader, stdout io.Writer) error {
 			s.MaxIterations = cfg.Loop.MaxIterations
 		}
 		if s.Iteration >= s.MaxIterations {
-			decision = stopHookDecision{
+			prep.skip = true
+			prep.skipDecision = stopHookDecision{
 				Decision: "block",
 				Reason: fmt.Sprintf(
 					"Completion-loop cap (%d iterations) reached without Codex approval. "+
 						"Summarize the current state for the user, describe what Codex has been pushing back on, "+
-						"and hand control back for a human decision. Do not re-emit [COMPLETION].",
-					s.MaxIterations,
+						"and hand control back for a human decision. Do not re-emit [%s].",
+					s.MaxIterations, completionTag,
 				),
 			}
 			s.TerminatedReason = "cap"
 			s.Iteration = 0
 			return nil
 		}
-
-		prefix := renderReviewPrefix(s.Iteration+1, s.MaxIterations)
-		replyText, received, errMsg := hookBridgeSender(ctx, prefix+tail, cfg.Loop.PerTurnTimeoutMs)
 		s.Iteration++
+		prep.iteration = s.Iteration
+		prep.maxIter = s.MaxIterations
+		return nil
+	}); err != nil {
+		return nil
+	}
 
+	if prep.skip {
+		return writeJSON(stdout, prep.skipDecision)
+	}
+
+	// Step 2 (UNLOCKED): long-running Codex round. Holding the flock over
+	// a ~90s bridge send would stall any concurrent hook run; release so
+	// other gossip processes touching loop-state can make progress.
+	prefix := renderReviewPrefix(prep.iteration, prep.maxIter, approvalInstruction)
+	replyText, received, errMsg := hookBridgeSender(ctx, prefix+tail, cfg.Loop.PerTurnTimeoutMs)
+
+	// Step 3 (locked): record outcome and build the decision.
+	var decision stopHookDecision
+	_ = loopstate.WithLock(statePath, func(s *loopstate.State) error {
 		if !received {
 			reason := "Codex did not reply"
 			if errMsg != "" {
@@ -206,8 +240,8 @@ func runHookStop(ctx context.Context, stdin io.Reader, stdout io.Writer) error {
 				Decision: "block",
 				Reason: fmt.Sprintf(
 					"%s. Summarize current status for the user and ask whether to retry or abandon the loop. "+
-						"Do not re-emit [COMPLETION] unless the user asks you to.",
-					reason,
+						"Do not re-emit [%s] unless the user asks you to.",
+					reason, completionTag,
 				),
 			}
 			s.TerminatedReason = "codex-silent"
@@ -220,11 +254,10 @@ func runHookStop(ctx context.Context, stdin io.Reader, stdout io.Writer) error {
 				Reason: fmt.Sprintf(
 					"✅ Codex approved the work:\n\n%s\n\n"+
 						"Write a one-line confirmation to the user that the task is complete. "+
-						"Do not revise the work further and do not re-emit [COMPLETION].",
-					replyText,
+						"Do not revise the work further and do not re-emit [%s].",
+					replyText, completionTag,
 				),
 			}
-			s.LastCodexReplyID = "approved"
 			s.TerminatedReason = "approved"
 			s.Iteration = 0
 			return nil
@@ -234,17 +267,14 @@ func runHookStop(ctx context.Context, stdin io.Reader, stdout io.Writer) error {
 			Decision: "block",
 			Reason: fmt.Sprintf(
 				"Codex review (iteration %d/%d):\n\n%s\n\n"+
-					"Revise your work based on this feedback. End your next response with [COMPLETION] "+
+					"Revise your work based on this feedback. End your next response with [%s] "+
 					"if you believe the revision addresses Codex's points.",
-				s.Iteration, s.MaxIterations, replyText,
+				prep.iteration, prep.maxIter, replyText, completionTag,
 			),
 		}
-		s.LastCodexReplyID = "rejected"
+		s.TerminatedReason = "rejected"
 		return nil
 	})
-	if err != nil {
-		return nil
-	}
 	if decision.Decision == "" {
 		return nil
 	}
@@ -278,37 +308,59 @@ func writeJSON(w io.Writer, v any) error {
 	return err
 }
 
+// primaryTag returns the first configured tag, or fallback if none.
+// Used when the user-facing prompt needs to name *the* tag Claude should
+// emit — usually the first one in the list.
+func primaryTag(tags []string, fallback string) string {
+	if len(tags) > 0 {
+		return tags[0]
+	}
+	return fallback
+}
+
+// renderApprovalInstruction produces the clause we embed in review-request
+// prompts telling Codex which sentinel means "approved". When multiple
+// approval tags are configured, the instruction lists them explicitly so
+// Codex is not forced to choose blindly.
+func renderApprovalInstruction(tags []string) string {
+	if len(tags) == 0 {
+		return "include [COMPLETED] in your reply"
+	}
+	if len(tags) == 1 {
+		return fmt.Sprintf("include [%s] in your reply", tags[0])
+	}
+	parts := make([]string, len(tags))
+	for i, t := range tags {
+		parts[i] = "[" + t + "]"
+	}
+	return "include one of " + strings.Join(parts, " / ") + " in your reply"
+}
+
 func renderSessionStartContext(loop config.LoopConfig) string {
 	if !loop.Enabled {
 		return ""
 	}
-	completionTag := "COMPLETION"
-	if len(loop.CompletionTags) > 0 {
-		completionTag = loop.CompletionTags[0]
-	}
-	approvalTag := "COMPLETED"
-	if len(loop.ApprovalTags) > 0 {
-		approvalTag = loop.ApprovalTags[0]
-	}
+	completionTag := primaryTag(loop.CompletionTags, "COMPLETION")
+	approvalInstruction := renderApprovalInstruction(loop.ApprovalTags)
 	return fmt.Sprintf(
 		`## Gossip completion-loop protocol
 You are collaborating with Codex through a gossip bridge. When you believe a task is complete, end your assistant message with the literal tag [%s] on its own line. A reviewer (Codex) will evaluate and respond:
-  - Approval is signaled by Codex including [%s] (or any configured approval tag) in its reply. You will receive a continuation asking you to write a one-line confirmation — do not revise further.
+  - Approval is signaled when Codex's reply uses the sign-off tag (the review prompt instructs Codex to %s).
   - Otherwise, Codex's feedback arrives as a new user turn; revise your work and re-emit [%s] when you believe the revision addresses the feedback.
 Maximum loop iterations per task: %d. After that the user takes over.
 Use the consult_codex MCP tool for targeted mid-turn consultations only; do not also emit [%s] in the same turn.`,
-		completionTag, approvalTag, completionTag, loop.MaxIterations, completionTag,
+		completionTag, approvalInstruction, completionTag, loop.MaxIterations, completionTag,
 	)
 }
 
-func renderReviewPrefix(iter, max int) string {
+func renderReviewPrefix(iter, max int, approvalInstruction string) string {
 	return fmt.Sprintf(
 		"[gossip:review-request iter=%d/max=%d]\n"+
 			"Claude believes the task below is complete. Please review and:\n"+
-			"  - If correct and complete, include [COMPLETED] in your reply.\n"+
+			"  - If correct and complete, %s.\n"+
 			"  - Otherwise, describe specifically what needs to change.\n"+
 			"Task summary from Claude:\n---\n",
-		iter, max,
+		iter, max, approvalInstruction,
 	)
 }
 

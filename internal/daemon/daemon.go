@@ -319,9 +319,17 @@ func (d *Daemon) handleCodexEvent(ctx context.Context, ev codex.Event) {
 		d.stateMu.Unlock()
 		if replyRequired && !replyReceived {
 			d.broadcastSystem(ctx, "system_reply_missing", replyMissingMessage)
-			if d.loopQueue != nil {
-				d.loopQueue.OnTurnCompletedWithoutReply()
-			}
+		}
+		// Always notify the loop queue on turn-completed. The replyReceived
+		// tracker above is triggered by *any* agentMessage (including
+		// [STATUS]/[FYI]), but the loop queue only resolves on [IMPORTANT]
+		// markers — so a [STATUS]-only turn would leave the blocking send
+		// hanging until waitMs. OnTurnCompletedWithoutReply is idempotent
+		// (no-op when nothing is active or when already resolved), so
+		// calling unconditionally is safe and guarantees the hook never
+		// waits longer than one Codex turn.
+		if d.loopQueue != nil {
+			d.loopQueue.OnTurnCompletedWithoutReply()
 		}
 		d.broadcastSystem(ctx, "system_turn_completed", "✅ Codex finished the current turn. You can reply now if needed.")
 		d.startAttentionWindow(0)

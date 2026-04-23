@@ -14,7 +14,7 @@ var consultCodexInputSchema = json.RawMessage(`{
   "type": "object",
   "properties": {
     "text": {"type": "string", "description": "The message to send to Codex."},
-    "require_reply": {"type": "boolean", "description": "When true, Codex must reply with an [IMPORTANT]-marked message before control returns."}
+    "require_reply": {"type": "boolean", "description": "When true, asks Codex to mark its reply [IMPORTANT]. The tool call itself returns as soon as the message is injected — the reply arrives asynchronously via the next get_messages call (pull mode) or a channel tag (push mode)."}
   },
   "required": ["text"]
 }`)

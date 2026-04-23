@@ -69,8 +69,12 @@ func (s *StateDir) TuiPidFile() string { return filepath.Join(s.dir, "codex-tui.
 // flock (`<path>.lock`).
 func (s *StateDir) LoopStateFile() string { return filepath.Join(s.dir, "loop-state.json") }
 
-// OutboundQueueFile returns the path to the persistent Claude→Codex outbound
-// journal. The daemon appends one JSON line per pending blocking send and
-// drains it when the Codex TUI becomes attachable, making startup order
-// between `gossip claude` and `gossip codex` independent.
+// OutboundQueueFile returns the reserved path for a future Claude→Codex
+// outbound queue journal. The current loop queue is in-memory only — the
+// daemon is a process singleton and a blocking caller's WebSocket cannot
+// survive a daemon restart, so a disk journal offers no recovery value
+// today. Startup-order independence is achieved via in-memory buffering
+// plus `DrainForTUI` on `EventThreadReady`. This accessor exists so
+// future persistence work (e.g. auditing, replay-on-restart for other
+// callers) does not have to shift file paths.
 func (s *StateDir) OutboundQueueFile() string { return filepath.Join(s.dir, "outbound-queue.jsonl") }

@@ -78,6 +78,13 @@ end users rarely invoke this directly.`,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			ctx := cmd.Context()
 			if text == "" {
+				// Refuse to read stdin when it's a terminal: interactive
+				// runs without --text would block waiting for EOF. Hooks
+				// pass stdin via pipe, so the TTY check only rejects
+				// genuinely interactive invocations.
+				if stdinIsTerminal() {
+					return fmt.Errorf("missing --text (stdin is a terminal; pass --text \"<message>\" or pipe the payload)")
+				}
 				stdinBytes, err := io.ReadAll(cmd.InOrStdin())
 				if err != nil {
 					return fmt.Errorf("read stdin: %w", err)
@@ -147,4 +154,15 @@ func runBridgeSend(ctx context.Context, p bridgeSendParams) (BridgeSendResult, i
 func writeResult(out io.Writer, r BridgeSendResult) {
 	body, _ := json.MarshalIndent(r, "", "  ")
 	fmt.Fprintln(out, string(body))
+}
+
+// stdinIsTerminal reports whether os.Stdin is an interactive tty. Used to
+// decide whether to read stdin for the --text fallback. Overridable in
+// tests via the package-level seam.
+var stdinIsTerminal = func() bool {
+	fi, err := os.Stdin.Stat()
+	if err != nil {
+		return false
+	}
+	return fi.Mode()&os.ModeCharDevice != 0
 }

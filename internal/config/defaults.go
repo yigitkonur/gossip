@@ -18,8 +18,15 @@ var DefaultConfig = Config{
 		Enabled:          true,
 		MaxIterations:    5,
 		PerTurnTimeoutMs: 90_000,
-		CompletionTags:   []string{"COMPLETION", "DONE", "READY"},
-		ApprovalTags:     []string{"COMPLETED", "APPROVED", "LGTM"},
+		// Restricted to a single explicit sentinel by default. `DONE` and
+		// `READY` (earlier candidates) false-positive on ordinary prose —
+		// "I'm done with the changes" would engage the loop. Projects that
+		// want more aliases can add them in .gossip/config.json.
+		CompletionTags: []string{"COMPLETION"},
+		// `APPROVED` similarly matched "not approved" negations with the
+		// word-boundary check; dropped from defaults. `COMPLETED`/`LGTM`
+		// are idiomatic sign-offs that Codex would not emit accidentally.
+		ApprovalTags: []string{"COMPLETED", "LGTM"},
 	},
 }
 

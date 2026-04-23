@@ -4,7 +4,7 @@ This file applies to `internal/mcp/`.
 
 ## What this folder is
 - This folder is the Claude-facing MCP server.
-- It speaks line-delimited JSON-RPC over stdio and exposes the `reply` and `get_messages` tools.
+- It speaks line-delimited JSON-RPC over stdio and exposes the `consult_codex` and `get_messages` tools.
 
 ## When editing here
 - Keep this package about MCP, tools, and message delivery.

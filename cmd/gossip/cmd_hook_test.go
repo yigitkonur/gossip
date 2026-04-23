@@ -241,6 +241,63 @@ func TestRunHookStop_LoopDisabledEnvIsSilent(t *testing.T) {
 	}
 }
 
+func TestRunHookStop_StopHookActiveIsSilent(t *testing.T) {
+	cfg := defaultLoopCfg()
+	defer withHookHooks(t, cfg, func(_ context.Context, _ string, _ int) (string, bool, string) {
+		t.Fatalf("bridge should not be called when stop_hook_active=true")
+		return "", false, ""
+	})()
+	path := makeTranscript(t, "Done. [COMPLETION]", false)
+	dec, out := runStopAndCapture(t, stopHookInput{SessionID: "s1", TranscriptPath: path, StopHookActive: true})
+	if out != "" || dec.Decision != "" {
+		t.Errorf("expected silent exit on re-entry, got %+v / %q", dec, out)
+	}
+}
+
+func TestRunHookStop_UsesConfiguredTagsInPrompts(t *testing.T) {
+	cfg := defaultLoopCfg()
+	cfg.Loop.CompletionTags = []string{"READY_FOR_REVIEW"}
+	cfg.Loop.ApprovalTags = []string{"SHIP_IT"}
+
+	var gotText string
+	defer withHookHooks(t, cfg, func(_ context.Context, text string, _ int) (string, bool, string) {
+		gotText = text
+		return "Please add error handling.", true, ""
+	})()
+
+	path := makeTranscript(t, "Task finished. [READY_FOR_REVIEW]", false)
+	dec, _ := runStopAndCapture(t, stopHookInput{SessionID: "s1", TranscriptPath: path})
+	if !strings.Contains(gotText, "[SHIP_IT]") {
+		t.Errorf("bridge prefix should use configured approval tag SHIP_IT: %q", gotText)
+	}
+	if strings.Contains(gotText, "[COMPLETED]") {
+		t.Errorf("bridge prefix must not contain hardcoded [COMPLETED] when ApprovalTags is overridden: %q", gotText)
+	}
+	if !strings.Contains(dec.Reason, "[READY_FOR_REVIEW]") {
+		t.Errorf("rejection continuation should reference configured completion tag: %q", dec.Reason)
+	}
+	if strings.Contains(dec.Reason, "[COMPLETION]") {
+		t.Errorf("rejection continuation must not reference hardcoded [COMPLETION]: %q", dec.Reason)
+	}
+}
+
+func TestRenderApprovalInstruction_ListsMultipleTags(t *testing.T) {
+	cases := []struct {
+		in   []string
+		want string
+	}{
+		{nil, "include [COMPLETED] in your reply"},
+		{[]string{"COMPLETED"}, "include [COMPLETED] in your reply"},
+		{[]string{"SHIP_IT"}, "include [SHIP_IT] in your reply"},
+		{[]string{"COMPLETED", "LGTM"}, "include one of [COMPLETED] / [LGTM] in your reply"},
+	}
+	for _, tc := range cases {
+		if got := renderApprovalInstruction(tc.in); got != tc.want {
+			t.Errorf("renderApprovalInstruction(%v) = %q, want %q", tc.in, got, tc.want)
+		}
+	}
+}
+
 func TestRunHookStop_PushesAndInjectsApprovalReason(t *testing.T) {
 	cfg := defaultLoopCfg()
 	var gotText string
