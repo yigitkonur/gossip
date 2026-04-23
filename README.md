@@ -201,7 +201,7 @@ Two tags make the loop work. Everything else is mechanics.
 | **Claude**    | `[COMPLETION]` | "I believe this task is done — please review."            |
 | **Codex**     | `[COMPLETED]`  | "Approved. Looks correct and complete."                   |
 
-Tags are matched case-insensitively on word boundaries. `[COMPLETION]`, `COMPLETION`, and `completion` all match. `COMPLETIONS` and `RECOMPLETION` do not. Additional aliases (`DONE` / `READY` for completion, `APPROVED` / `LGTM` for approval) are configurable in `.gossip/config.json → loop.{completionTags,approvalTags}`.
+Tags are matched case-insensitively on word boundaries. `[COMPLETION]`, `COMPLETION`, and `completion` all match. `COMPLETIONS` and `RECOMPLETION` do not. The defaults deliberately avoid generic words like `DONE` or `APPROVED` (which would match ordinary prose like "I'm done with the changes" or "not approved"). Additional aliases are configurable per project in `.gossip/config.json → loop.{completionTags,approvalTags}` — the default `LGTM` approval tag demonstrates that aliases work.
 
 ### The cycle
 
@@ -272,8 +272,8 @@ The `loop` block in `.gossip/config.json`:
     "enabled": true,               // master switch
     "maxIterations": 5,            // approval-less cap before the hook escalates
     "perTurnTimeoutMs": 90000,     // per-round wait for Codex's reply
-    "completionTags": ["COMPLETION", "DONE", "READY"],     // Claude → "review please"
-    "approvalTags":   ["COMPLETED", "APPROVED", "LGTM"]    // Codex → "approved"
+    "completionTags": ["COMPLETION"],          // Claude → "review please"
+    "approvalTags":   ["COMPLETED", "LGTM"]    // Codex → "approved"
   }
 }
 ```
@@ -349,8 +349,8 @@ Gossip stores project-local config in `.gossip/config.json`. The Go runtime acce
     "enabled": true,
     "maxIterations": 5,
     "perTurnTimeoutMs": 90000,
-    "completionTags": ["COMPLETION", "DONE", "READY"],
-    "approvalTags":   ["COMPLETED", "APPROVED", "LGTM"]
+    "completionTags": ["COMPLETION"],
+    "approvalTags":   ["COMPLETED", "LGTM"]
   }
 }
 ```
