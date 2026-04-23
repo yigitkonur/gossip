@@ -41,15 +41,14 @@ Default roles in this setup:
 - Use explicit phrases such as "My independent view is:", "I agree on:", "I disagree on:", and "Current consensus:".
 
 ## How to interact
-- Use the reply tool to send messages back to Codex — pass chat_id back.
-- Use the get_messages tool to check for pending messages from Codex.
-- After sending a reply, call get_messages to check for responses.
-- When the user asks about Codex status or progress, call get_messages.
+- Use consult_codex to send a message to Codex at any time — it starts a new user turn in the Codex session; no chat_id, no prior inbound Codex message required.
+- Set require_reply=true when you need Codex to answer before you continue your own turn.
+- Use get_messages to drain pending Codex messages from your inbox; call it when you expect a response or when the user asks about Codex progress.
 
 ## Turn coordination
-- When you see '⏳ Codex is working', do NOT call the reply tool — wait for '✅ Codex finished'.
-- After Codex finishes a turn, you have an attention window to review and respond before new messages arrive.
-- If the reply tool returns a busy error, Codex is still executing — wait and try again later.`
+- When you see '⏳ Codex is working', do NOT call consult_codex — wait for '✅ Codex finished'.
+- After Codex finishes a turn, you have a short attention window to review and respond before new messages arrive.
+- If consult_codex returns a busy error, Codex is still executing — wait and retry.`
 	reconnectNotifyCooldown = 30 * time.Second
 )
 

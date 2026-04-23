@@ -15,6 +15,10 @@ type Handler interface {
 	OnClaudeConnect()
 	OnClaudeDisconnect(reason string)
 	OnClaudeToCodex(ctx context.Context, msg protocol.BridgeMessage, requireReply bool) (success bool, errorMsg string)
+	// OnClaudeToCodexBlocking injects a message into Codex via the outbound
+	// queue and blocks (up to waitMs) for an [IMPORTANT]-marked reply.
+	// Returns the reply body, whether it actually arrived, and any error.
+	OnClaudeToCodexBlocking(ctx context.Context, msg protocol.BridgeMessage, requireReply bool, waitMs int) (text string, received bool, errorMsg string)
 	Snapshot() Status
 }
 
@@ -190,6 +194,27 @@ func (s *Server) handleClientMessage(ctx context.Context, c *controlConn, msg Cl
 		}
 		ok, errMsg := s.handler.OnClaudeToCodex(ctx, *msg.Message, msg.RequireReply)
 		_ = c.write(ctx, ServerMessage{Type: ServerMsgClaudeToCodexResult, RequestID: msg.RequestID, Success: ok, Error: errMsg})
+	case ClientMsgClaudeToCodexBlocking:
+		// Intentionally does NOT require attachment. The completion-loop hook
+		// (`gossip bridge send`) dials the control WS as a short-lived
+		// side-channel while the main Claude session is already attached;
+		// asking it to claim the primary attachment would trip CloseCodeReplaced.
+		if msg.Message == nil {
+			_ = c.write(ctx, ServerMessage{Type: ServerMsgClaudeToCodexReply, RequestID: msg.RequestID, Received: false, Error: "missing message"})
+			return
+		}
+		// Dispatch the (potentially ~90 s) blocking handler in a goroutine
+		// so this connection's read loop keeps serving other client
+		// messages — otherwise concurrent status/connect/disconnect
+		// operations would starve for the full Codex turn.
+		blockMsg := *msg.Message
+		requestID := msg.RequestID
+		requireReply := msg.RequireReply
+		waitMs := msg.WaitMs
+		go func() {
+			text, received, errMsg := s.handler.OnClaudeToCodexBlocking(ctx, blockMsg, requireReply, waitMs)
+			_ = c.write(ctx, ServerMessage{Type: ServerMsgClaudeToCodexReply, RequestID: requestID, Text: text, Received: received, Error: errMsg})
+		}()
 	case ClientMsgStatus:
 		s.mu.Lock()
 		isAttached := s.attached == c

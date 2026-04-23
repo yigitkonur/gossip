@@ -7,6 +7,8 @@ import (
 	"sync/atomic"
 	"testing"
 	"time"
+
+	"github.com/yigitkonur/gossip/internal/protocol"
 )
 
 func TestClient_RejectedDuplicateStopsReconnectLoop(t *testing.T) {
@@ -100,6 +102,59 @@ func TestClient_RejectedDuplicateStopsReconnectLoop(t *testing.T) {
 		}
 	case <-time.After(2 * time.Second):
 		t.Fatal("timed out waiting for RunWithReconnect to exit")
+	}
+}
+
+func TestClient_SendReplyBlocking_RoundTrip(t *testing.T) {
+	h := &testHandler{status: Status{BridgeReady: true}, blockReply: "codex says hi", blockOK: true}
+	s := NewServer(h)
+	srv := httptest.NewServer(s.HTTPHandler())
+	defer srv.Close()
+	wsURL := "ws" + strings.TrimPrefix(srv.URL, "http") + "/ws"
+
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+
+	c := NewClient(ClientOptions{URL: wsURL})
+	if err := c.Connect(ctx); err != nil {
+		t.Fatalf("connect: %v", err)
+	}
+	defer c.Disconnect()
+	if err := c.AttachClaude(ctx); err != nil {
+		t.Fatalf("attach: %v", err)
+	}
+
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		h.mu.Lock()
+		attached := h.connects == 1
+		h.mu.Unlock()
+		if attached {
+			break
+		}
+		time.Sleep(25 * time.Millisecond)
+	}
+
+	text, received, errMsg := c.SendReplyBlocking(ctx, protocol.BridgeMessage{
+		ID:      "blk_1",
+		Source:  protocol.SourceClaude,
+		Content: "review this",
+	}, true, 2000)
+
+	if !received {
+		t.Errorf("received = false, want true")
+	}
+	if text != "codex says hi" {
+		t.Errorf("text = %q, want %q", text, "codex says hi")
+	}
+	if errMsg != "" {
+		t.Errorf("errMsg = %q, want empty", errMsg)
+	}
+	h.mu.Lock()
+	got := len(h.blocking)
+	h.mu.Unlock()
+	if got != 1 {
+		t.Errorf("handler saw %d blocking sends, want 1", got)
 	}
 }
 

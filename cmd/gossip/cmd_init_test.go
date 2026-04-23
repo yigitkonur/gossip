@@ -417,3 +417,262 @@ func mustWriteFile(t *testing.T, path, content string) {
 		t.Fatalf("WriteFile(%s): %v", path, err)
 	}
 }
+
+// ---------- ensureProjectClaudeSettings ----------
+
+func TestEnsureProjectClaudeSettings_CreatesWhenMissing(t *testing.T) {
+	dir := t.TempDir()
+	path, status, err := ensureProjectClaudeSettings(dir)
+	if err != nil {
+		t.Fatalf("ensure: %v", err)
+	}
+	if status != claudeSettingsCreated {
+		t.Fatalf("status = %v, want created", status)
+	}
+	if path != filepath.Join(dir, ".claude", "settings.json") {
+		t.Fatalf("path = %q", path)
+	}
+	var doc map[string]any
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read: %v", err)
+	}
+	if err := json.Unmarshal(raw, &doc); err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	hooks, _ := doc["hooks"].(map[string]any)
+	if hooks == nil {
+		t.Fatalf("hooks missing: %s", raw)
+	}
+	for _, event := range []string{"SessionStart", "Stop"} {
+		list, _ := hooks[event].([]any)
+		if len(list) == 0 {
+			t.Errorf("%s event missing entries", event)
+			continue
+		}
+		firstHook, _ := list[0].(map[string]any)
+		innerHooks, _ := firstHook["hooks"].([]any)
+		if len(innerHooks) == 0 {
+			t.Errorf("%s event has no inner hooks", event)
+			continue
+		}
+		hm, _ := innerHooks[0].(map[string]any)
+		cmd, _ := hm["command"].(string)
+		if !strings.HasPrefix(cmd, "gossip hook ") {
+			t.Errorf("%s event command = %q, want prefix 'gossip hook '", event, cmd)
+		}
+	}
+}
+
+func TestEnsureProjectClaudeSettings_MergesIntoExistingHooks(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, ".claude", "settings.json")
+	existing := `{
+  "permissions": {"allow": ["Read"]},
+  "hooks": {
+    "SessionStart": [
+      {"matcher": "*", "hooks": [{"type": "command", "command": "echo other"}]}
+    ]
+  }
+}
+`
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	if err := os.WriteFile(path, []byte(existing), 0o644); err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+	_, status, err := ensureProjectClaudeSettings(dir)
+	if err != nil {
+		t.Fatalf("ensure: %v", err)
+	}
+	if status != claudeSettingsMerged {
+		t.Fatalf("status = %v, want merged", status)
+	}
+	raw, _ := os.ReadFile(path)
+	var doc map[string]any
+	if err := json.Unmarshal(raw, &doc); err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	if perms, _ := doc["permissions"].(map[string]any); perms == nil {
+		t.Errorf("unrelated permissions block dropped")
+	}
+	hooks, _ := doc["hooks"].(map[string]any)
+	sessionList, _ := hooks["SessionStart"].([]any)
+	if len(sessionList) != 2 {
+		t.Fatalf("SessionStart should have 2 entries (user + gossip), got %d: %s", len(sessionList), raw)
+	}
+	if _, ok := hooks["Stop"]; !ok {
+		t.Errorf("Stop event missing after merge")
+	}
+}
+
+func TestEnsureProjectClaudeSettings_ReplacesStaleGossipEntry(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, ".claude", "settings.json")
+	stale := `{
+  "hooks": {
+    "Stop": [
+      {"matcher": "*", "hooks": [{"type": "command", "command": "gossip hook OLD-VERB"}]}
+    ]
+  }
+}
+`
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	if err := os.WriteFile(path, []byte(stale), 0o644); err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+	_, status, err := ensureProjectClaudeSettings(dir)
+	if err != nil {
+		t.Fatalf("ensure: %v", err)
+	}
+	if status != claudeSettingsMerged {
+		t.Fatalf("status = %v, want merged", status)
+	}
+	raw, _ := os.ReadFile(path)
+	if !strings.Contains(string(raw), "gossip hook stop") {
+		t.Errorf("canonical command missing after replace: %s", raw)
+	}
+	if strings.Contains(string(raw), "OLD-VERB") {
+		t.Errorf("stale gossip entry not removed: %s", raw)
+	}
+}
+
+func TestEnsureProjectClaudeSettings_IdempotentOnRerun(t *testing.T) {
+	dir := t.TempDir()
+	_, _, err := ensureProjectClaudeSettings(dir)
+	if err != nil {
+		t.Fatalf("ensure#1: %v", err)
+	}
+	path := filepath.Join(dir, ".claude", "settings.json")
+	first, _ := os.ReadFile(path)
+
+	// Second invocation should be a no-op.
+	_, status, err := ensureProjectClaudeSettings(dir)
+	if err != nil {
+		t.Fatalf("ensure#2: %v", err)
+	}
+	if status != claudeSettingsUnchanged {
+		t.Errorf("status = %v, want unchanged on re-run", status)
+	}
+	second, _ := os.ReadFile(path)
+	if string(first) != string(second) {
+		t.Errorf("file mutated on idempotent re-run:\nbefore=%s\nafter=%s", first, second)
+	}
+}
+
+func TestEnsureProjectClaudeSettings_RejectsInvalidJSON(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, ".claude", "settings.json")
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	if err := os.WriteFile(path, []byte("{not json"), 0o644); err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+	if _, _, err := ensureProjectClaudeSettings(dir); err == nil {
+		t.Fatalf("expected error on invalid JSON")
+	}
+}
+
+// ---------- runUninstall ----------
+
+func TestRunUninstall_RemovesGossipHooksAndMCPEntryAndDir(t *testing.T) {
+	projectDir := t.TempDir()
+	prevWD, _ := os.Getwd()
+	defer os.Chdir(prevWD)
+	if err := os.Chdir(projectDir); err != nil {
+		t.Fatalf("chdir: %v", err)
+	}
+
+	// Seed: settings.json with gossip + other hook, .mcp.json with gossip + other, .gossip/ with a file.
+	mustWriteFile(t, filepath.Join(projectDir, ".claude", "settings.json"), `{
+  "hooks": {
+    "Stop": [
+      {"matcher":"*","hooks":[{"type":"command","command":"gossip hook stop"}]},
+      {"matcher":"*","hooks":[{"type":"command","command":"echo keep"}]}
+    ],
+    "SessionStart": [
+      {"matcher":"*","hooks":[{"type":"command","command":"gossip hook session-start"}]}
+    ]
+  }
+}`)
+	mustWriteFile(t, filepath.Join(projectDir, ".mcp.json"), `{
+  "mcpServers": {
+    "gossip": {"command": "gossip", "args": ["claude"]},
+    "other":  {"command": "foo"}
+  }
+}`)
+	mustWriteFile(t, filepath.Join(projectDir, ".gossip", "config.json"), `{}`)
+
+	var out bytes.Buffer
+	if err := runUninstall(&out); err != nil {
+		t.Fatalf("runUninstall: %v", err)
+	}
+
+	// Settings: gossip hooks removed, non-gossip hook preserved.
+	raw, _ := os.ReadFile(filepath.Join(projectDir, ".claude", "settings.json"))
+	if strings.Contains(string(raw), "gossip hook") {
+		t.Errorf("gossip hooks still in settings: %s", raw)
+	}
+	if !strings.Contains(string(raw), "echo keep") {
+		t.Errorf("unrelated Stop hook dropped: %s", raw)
+	}
+
+	// MCP: gossip removed, other preserved.
+	rawMcp, _ := os.ReadFile(filepath.Join(projectDir, ".mcp.json"))
+	if strings.Contains(string(rawMcp), `"gossip"`) {
+		t.Errorf("gossip MCP entry still present: %s", rawMcp)
+	}
+	if !strings.Contains(string(rawMcp), `"other"`) {
+		t.Errorf("unrelated MCP server dropped: %s", rawMcp)
+	}
+
+	// .gossip/ gone.
+	if _, err := os.Stat(filepath.Join(projectDir, ".gossip")); !os.IsNotExist(err) {
+		t.Errorf(".gossip/ not removed: err=%v", err)
+	}
+}
+
+func TestRunUninstall_DeletesEmptyFilesAfterStrip(t *testing.T) {
+	projectDir := t.TempDir()
+	prevWD, _ := os.Getwd()
+	defer os.Chdir(prevWD)
+	_ = os.Chdir(projectDir)
+
+	// Both files contain only gossip → should be deleted outright.
+	mustWriteFile(t, filepath.Join(projectDir, ".claude", "settings.json"), `{
+  "hooks": {
+    "Stop": [{"matcher":"*","hooks":[{"type":"command","command":"gossip hook stop"}]}]
+  }
+}`)
+	mustWriteFile(t, filepath.Join(projectDir, ".mcp.json"), `{"mcpServers":{"gossip":{"command":"gossip","args":["claude"]}}}`)
+
+	var out bytes.Buffer
+	if err := runUninstall(&out); err != nil {
+		t.Fatalf("runUninstall: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(projectDir, ".claude", "settings.json")); !os.IsNotExist(err) {
+		t.Errorf("settings.json should be deleted when empty, err=%v", err)
+	}
+	if _, err := os.Stat(filepath.Join(projectDir, ".mcp.json")); !os.IsNotExist(err) {
+		t.Errorf(".mcp.json should be deleted when empty, err=%v", err)
+	}
+}
+
+func TestRunUninstall_NoOpWhenNothingPresent(t *testing.T) {
+	projectDir := t.TempDir()
+	prevWD, _ := os.Getwd()
+	defer os.Chdir(prevWD)
+	_ = os.Chdir(projectDir)
+
+	var out bytes.Buffer
+	if err := runUninstall(&out); err != nil {
+		t.Fatalf("runUninstall: %v", err)
+	}
+	if !strings.Contains(out.String(), "Uninstall complete") {
+		t.Errorf("expected completion note, got %q", out.String())
+	}
+}

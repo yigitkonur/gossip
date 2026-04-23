@@ -63,3 +63,18 @@ func (s *StateDir) KilledFile() string { return filepath.Join(s.dir, "killed") }
 
 // TuiPidFile returns the managed TUI PID file path.
 func (s *StateDir) TuiPidFile() string { return filepath.Join(s.dir, "codex-tui.pid") }
+
+// LoopStateFile returns the path to the completion-loop state JSON. Keyed by
+// session ID internally; written by `gossip hook` handlers under an advisory
+// flock (`<path>.lock`).
+func (s *StateDir) LoopStateFile() string { return filepath.Join(s.dir, "loop-state.json") }
+
+// OutboundQueueFile returns the reserved path for a future Claude→Codex
+// outbound queue journal. The current loop queue is in-memory only — the
+// daemon is a process singleton and a blocking caller's WebSocket cannot
+// survive a daemon restart, so a disk journal offers no recovery value
+// today. Startup-order independence is achieved via in-memory buffering
+// plus `DrainForTUI` on `EventThreadReady`. This accessor exists so
+// future persistence work (e.g. auditing, replay-on-restart for other
+// callers) does not have to shift file paths.
+func (s *StateDir) OutboundQueueFile() string { return filepath.Join(s.dir, "outbound-queue.jsonl") }

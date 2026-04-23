@@ -37,6 +37,8 @@ func newRootCmd() *cobra.Command {
 		newDaemonCmd(),
 		newKillCmd(),
 		newStatusCmd(),
+		newBridgeCmd(),
+		newHookCmd(),
 	)
 	return root
 }

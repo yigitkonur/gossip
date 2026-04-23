@@ -17,6 +17,7 @@ type Config struct {
 	Markers             []string               `json:"markers"`
 	TurnCoordination    TurnCoordinationConfig `json:"turnCoordination"`
 	IdleShutdownSeconds int                    `json:"idleShutdownSeconds"`
+	Loop                LoopConfig             `json:"loop"`
 }
 
 // DaemonConfig holds per-daemon settings.
@@ -35,6 +36,20 @@ type AgentConfig struct {
 type TurnCoordinationConfig struct {
 	AttentionWindowSeconds int  `json:"attentionWindowSeconds"`
 	BusyGuard              bool `json:"busyGuard"`
+}
+
+// LoopConfig governs the [COMPLETION]/[COMPLETED] review loop driven by the
+// Claude-side Stop hook. When Enabled is true and the hook is wired in
+// .claude/settings.json, `gossip hook stop` pushes the Claude summary to
+// Codex and injects Codex's reply as a continuation — up to MaxIterations
+// rounds, each capped by PerTurnTimeoutMs. Completion/approval tags are
+// matched case-insensitive, word-boundary.
+type LoopConfig struct {
+	Enabled          bool     `json:"enabled"`
+	MaxIterations    int      `json:"maxIterations"`
+	PerTurnTimeoutMs int      `json:"perTurnTimeoutMs"`
+	CompletionTags   []string `json:"completionTags"`
+	ApprovalTags     []string `json:"approvalTags"`
 }
 
 // Service loads and saves config from a project root.
@@ -144,6 +159,8 @@ func cloneDefaultConfig() Config {
 		cfg.Agents[name] = agent
 	}
 	cfg.Markers = append([]string(nil), DefaultConfig.Markers...)
+	cfg.Loop.CompletionTags = append([]string(nil), DefaultConfig.Loop.CompletionTags...)
+	cfg.Loop.ApprovalTags = append([]string(nil), DefaultConfig.Loop.ApprovalTags...)
 	return cfg
 }
 
